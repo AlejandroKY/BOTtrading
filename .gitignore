@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+.env
+# Datos de mercado y resultados generados (no se versionan)
+data/cache/
+data/raw/
+results/
