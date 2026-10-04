@@ -13,6 +13,8 @@ Fuentes soportadas:
 from __future__ import annotations
 
 import glob
+import gzip
+import hashlib
 import os
 from pathlib import Path
 
@@ -86,24 +88,33 @@ def load_futuresharks(symbol: str, root: str | Path | None = None, use_cache: bo
 
 
 def load_csv(path: str | Path, tz: str = "UTC", fmt: str = "auto", use_cache: bool = False) -> pd.DataFrame:
-    """Carga uno o varios CSV (acepta comodines: 'data/raw/ES_*.csv').
+    """Carga uno o varios archivos de velas (acepta comodines: 'data/real/NQ_1m_*.parquet').
 
+    Formatos: .csv, .csv.gz y .parquet (p.ej. los que guarda scripts/descargar_datos_databento.py
+    o la exportación de datos del gráfico de TradingView).
     tz:  zona horaria de los timestamps si vienen sin zona (Databento/IBKR suelen ser UTC;
          exportaciones de NinjaTrader/TradingView suelen estar en la hora local o del exchange).
     fmt: 'auto' (cabecera con time/open/high/low/close/volume) o 'ninjatrader'
          (formato 'yyyyMMdd HHmmss;open;high;low;close;volume' sin cabecera).
     """
     files = sorted(glob.glob(str(path))) or [str(path)]
-    cache = CACHE_DIR / (Path(files[0]).stem + f"_{len(files)}.parquet")
+    sig = "|".join(f"{f}:{os.path.getsize(f)}:{os.path.getmtime(f)}" for f in files if os.path.exists(f))
+    key = hashlib.md5(f"{sig}|{tz}|{fmt}".encode()).hexdigest()[:12]
+    cache = CACHE_DIR / f"{Path(files[0]).name.split('.')[0]}_{key}.parquet"
     if use_cache and cache.exists():
         return pd.read_parquet(cache)
     frames = []
     for f in files:
-        if fmt == "ninjatrader":
+        if f.endswith(".parquet"):
+            raw = pd.read_parquet(f)
+            if raw.index.name and raw.index.name not in raw.columns:
+                raw = raw.reset_index()
+        elif fmt == "ninjatrader":
             raw = pd.read_csv(f, sep=";", header=None, names=["time", "open", "high", "low", "close", "volume"])
             raw["time"] = pd.to_datetime(raw["time"], format="%Y%m%d %H%M%S")
         else:
-            with open(f, "r", encoding="utf-8", errors="ignore") as fh:
+            opener = gzip.open if f.endswith(".gz") else open
+            with opener(f, "rt", encoding="utf-8", errors="ignore") as fh:
                 head = fh.readline()
             raw = pd.read_csv(f, sep=";" if head.count(";") > head.count(",") else ",")
         frames.append(raw)
