@@ -3,8 +3,10 @@
 Uso (Windows, con MT5 abierto y con sesión iniciada):
     pip install MetaTrader5
     python scripts/download_mt5.py            # M1 y M5 de los 6 mercados
-Guarda data/oanda/<SIMBOLO>_<TF>.csv.gz con columnas time (UTC), open, high, low, close, volume, spread.
-Se carga con: python -m futbot backtest ... --csv data/oanda/US100_M1.csv.gz --tz UTC
+Guarda data/oanda/<SIMBOLO>_<TF>.csv.gz con columnas time, open, high, low, close, volume, spread.
+OJO: `time` es la hora del SERVIDOR de MT5 aunque aparezca como UTC. En OANDA es Nueva York + 7 h
+(la apertura de las 9:30 NY aparece a las 16:30). Por eso se carga con --tz mt5:
+    python -m futbot backtest ... --csv data/oanda/US100_M1.csv.gz --tz mt5
 """
 from __future__ import annotations
 

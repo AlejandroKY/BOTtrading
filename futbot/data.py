@@ -94,6 +94,8 @@ def load_csv(path: str | Path, tz: str = "UTC", fmt: str = "auto", use_cache: bo
     o la exportación de datos del gráfico de TradingView).
     tz:  zona horaria de los timestamps si vienen sin zona (Databento/IBKR suelen ser UTC;
          exportaciones de NinjaTrader/TradingView suelen estar en la hora local o del exchange).
+         'mt5': hora del servidor de MetaTrader 5 (OANDA y la mayoría de brokers usan Nueva York + 7 h,
+         con el horario de verano de EE.UU.), aunque el archivo diga UTC. Es el caso de data/oanda/.
     fmt: 'auto' (cabecera con time/open/high/low/close/volume) o 'ninjatrader'
          (formato 'yyyyMMdd HHmmss;open;high;low;close;volume' sin cabecera).
     """
@@ -135,7 +137,9 @@ def _finalize(raw: pd.DataFrame, time_col: str | None, tz: str) -> pd.DataFrame:
     if time_col is None:
         raise ValueError(f"No encuentro la columna de tiempo. Columnas: {list(df.columns)}")
     ts = df[time_col]
-    if pd.api.types.is_numeric_dtype(ts):  # epoch en s / ms / ns
+    if str(tz).lower() == "mt5":
+        idx = _mt5_to_et(ts)
+    elif pd.api.types.is_numeric_dtype(ts):  # epoch en s / ms / ns
         unit = "s" if ts.max() < 1e11 else "ms" if ts.max() < 1e14 else "ns"
         idx = pd.to_datetime(ts, unit=unit, utc=True)
     else:
@@ -187,6 +191,19 @@ def back_adjust(df: pd.DataFrame, col: str = "instrument_id") -> pd.DataFrame:
     return out
 
 
+def _mt5_to_et(ts: pd.Series) -> pd.Series:
+    """Hora del servidor MT5 (NY + 7 h: la vela de las 16:30 es la apertura de las 9:30) -> Nueva York.
+
+    Verificado con OANDA comparando US100 con MNQ real: UTC+3 en el verano de EE.UU., UTC+2 en invierno."""
+    if pd.api.types.is_numeric_dtype(ts):
+        server = pd.to_datetime(ts, unit="s")
+    else:
+        server = pd.to_datetime(ts, format="mixed")
+        if getattr(server.dt, "tz", None) is not None:
+            server = server.dt.tz_localize(None)  # MT5 marca "UTC", pero es la hora del servidor
+    return (server - pd.Timedelta(hours=7)).dt.tz_localize(ET, ambiguous="NaT", nonexistent="NaT")
+
+
 def _write_cache(df: pd.DataFrame, path: Path) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -220,8 +237,9 @@ def daily_bars(df: pd.DataFrame, atr_len: int = 14, rth_start: str = "09:30",
     TradingView, más la apertura/cierre del horario cash (RTH) y el ATR de Wilder.
 
     Columnas: open, high, low, close (Globex), atr (incluye el día), atr_prev (del día anterior
-    completo: lo único que se conoce a las 09:30), rth_open, rth_close, prev_rth_close y
-    gap_atr = |rth_open - prev_rth_close| / atr_prev. Índice: fecha de sesión (datetime.date).
+    completo: lo único que se conoce a las 09:30), rth_open/high/low/close, prev_rth_close/high/low,
+    gap_atr = |rth_open - prev_rth_close| / atr_prev y on_high/on_low (rango overnight: de las 18:00
+    hasta antes de rth_start). Índice: fecha de sesión (datetime.date).
     """
     local = df.index.tz_convert(ET).tz_localize(None)
     sdate = (local + pd.Timedelta(hours=6)).normalize()
@@ -239,9 +257,16 @@ def daily_bars(df: pd.DataFrame, atr_len: int = 14, rth_start: str = "09:30",
     h1, m1 = map(int, rth_end.split(":"))
     in_rth = np.asarray((mod >= h0 * 60 + m0) & (mod < h1 * 60 + m1)) & keep
     gr = df[in_rth].groupby(local[in_rth].normalize())
-    rth = pd.DataFrame({"rth_open": gr["open"].first(), "rth_close": gr["close"].last()})
+    rth = pd.DataFrame({"rth_open": gr["open"].first(), "rth_close": gr["close"].last(),
+                        "rth_high": gr["high"].max(), "rth_low": gr["low"].min()})
     d = d.join(rth, how="left")
     d["prev_rth_close"] = d["rth_close"].shift(1).ffill()  # último cierre cash disponible (como el Pine)
+    d["prev_rth_high"] = d["rth_high"].shift(1).ffill()
+    d["prev_rth_low"] = d["rth_low"].shift(1).ffill()
     d["gap_atr"] = (d["rth_open"] - d["prev_rth_close"]).abs() / d["atr_prev"]
+    # rango overnight: desde las 18:00 hasta antes de la apertura cash de esa sesión
+    pre = keep & np.asarray(((mod >= 18 * 60) | (mod < h0 * 60 + m0)))
+    go = df[pre].groupby(sdate[pre])
+    d = d.join(pd.DataFrame({"on_high": go["high"].max(), "on_low": go["low"].min()}), how="left")
     d.index = pd.DatetimeIndex(d.index).date
     return d

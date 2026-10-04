@@ -1,0 +1,220 @@
+//@version=6
+// =====================================================================================
+// ORB 5m NQ/ES con puntaje · ESTRATEGIA (futbot) · github.com/AlejandroKY/BOTtrading
+// Versión strategy() de pine/orb5_puntaje.pine para ver el backtest en el Probador de estrategias.
+// Mismas señales que el indicador. Úsala en MNQ1! o MES1! (micro): el tamaño se calcula con el valor
+// del punto del gráfico, así que en NQ1!/ES1! (mini) casi nunca cabe un contrato con $200 de riesgo.
+// Diferencias con futbot: TradingView decide el orden de stop y take profit dentro de una vela y, en la
+// vela de entrada, el parcial y el take profit usan el precio de cierre de las 9:35 como entrada
+// estimada. Por eso sus números pueden diferir un poco del backtest de futbot.
+// Herramienta de estudio, no asesoría financiera.
+// =====================================================================================
+strategy("ORB 5m NQ/ES con puntaje · estrategia (futbot)", shorttitle = "ORB5 puntaje (estrategia)", overlay = true, initial_capital = 50000, currency = currency.USD, default_qty_type = strategy.fixed, default_qty_value = 1, commission_type = strategy.commission.cash_per_contract, commission_value = 0.70, slippage = 1, pyramiding = 0, max_labels_count = 500)
+
+// ------------------------------------------------------------------- Entradas
+grpE = "Estrategia"
+minScore  = input.int(40, "Puntaje mínimo para operar", minval = 0, maxval = 100, group = grpE, tooltip = "40 = recomendado (~1 trade por semana). 60 = menos trades y más acierto. 80 = sólo las mejores (~6 al año).")
+selMode   = input.string("NQ primero (recomendado)", "Si NQ y ES califican", options = ["NQ primero (recomendado)", "Mejor puntaje"], group = grpE)
+usePart   = input.bool(true, "Tomar la mitad en +2R y mover el stop a la entrada", group = grpE)
+partR     = input.float(2.0, "Parcial en (R)", minval = 0.5, step = 0.5, group = grpE)
+targetR   = input.float(10.0, "Take profit final (R)", minval = 1.0, step = 0.5, group = grpE)
+holdMin   = input.int(60, "Salida por tiempo (minutos después de entrar)", minval = 5, maxval = 120, step = 5, group = grpE)
+minGapAtr = input.float(0.15, "Gap mínimo (× ATR diario)", minval = 0.0, step = 0.05, group = grpE)
+atrLen    = input.int(14, "Días del ATR", minval = 2, group = grpE)
+adjRolls  = input.bool(true, "Ajustar cambios de contrato (recomendado)", group = grpE)
+
+grpM = "Mercados"
+nqSym = input.symbol("CME_MINI:NQ1!", "Nasdaq", group = grpM)
+esSym = input.symbol("CME_MINI:ES1!", "S&P 500", group = grpM)
+
+grpR = "Riesgo"
+riskUsd  = input.float(200.0, "Riesgo por operación (USD)", minval = 10, step = 10, group = grpR, tooltip = "Lo que pierdes si toca el stop. Para una cuenta de 50K: $200.")
+sizeMode = input.string("Micro (MNQ / MES)", "Contratos", options = ["Micro (MNQ / MES)", "Mini (NQ / ES)"], group = grpR)
+maxQty   = input.int(50, "Máximo de contratos", minval = 1, group = grpR)
+costNq   = input.float(1.2, "Costo por operación NQ (puntos)", minval = 0, step = 0.1, group = grpR, tooltip = "Comisión + deslizamiento de ida y vuelta. El stop mínimo es 5 veces este costo (NQ: 6 puntos).")
+costEs   = input.float(0.8, "Costo por operación ES (puntos)", minval = 0, step = 0.1, group = grpR, tooltip = "ES: stop mínimo 4 puntos.")
+
+// ------------------------------------------------------------------- Constantes y utilidades
+TZ       = "America/New_York"
+OPEN_MIN = 9 * 60 + 30
+OR_END   = OPEN_MIN + 5
+RTH_END  = 16 * 60
+ON_START = 18 * 60
+EXIT_MIN = OR_END + holdMin
+TICK     = 0.25
+micro    = sizeMode == "Micro (MNQ / MES)"
+pvNq     = micro ? 2.0 : 20.0
+pvEs     = micro ? 5.0 : 50.0
+GRAY     = color.new(#787b86, 0)
+
+fPx(float x) => str.tostring(x, "#.00")
+fR(float x) => (x >= 0 ? "+" : "") + str.tostring(x, "0.0") + "R"
+fUsd(float x) => (x < 0 ? "-$" : "+$") + str.tostring(math.abs(math.round(x)), "#,###")
+fMoney(float x) => "$" + str.tostring(math.abs(math.round(x)), "#,###")
+fHM(int m) => str.tostring(math.floor(m / 60)) + ":" + str.format("{0,number,00}", m % 60)
+roundDown(float x) => math.floor(math.round(x / TICK, 6)) * TICK
+roundUp(float x) => math.ceil(math.round(x / TICK, 6)) * TICK
+clamp01(float x) => math.max(0.0, math.min(1.0, x))
+
+// ------------------------------------------------------------------- Datos de cada mercado
+// Se calcula dentro del contexto de cada símbolo (sesión completa y ajustado por roll): vela de
+// 9:30-9:35, rango overnight (18:00 a 9:29), máximo/mínimo/cierre del horario cash de ayer.
+orData() =>
+    tm  = hour(time, TZ) * 60 + minute(time, TZ)
+    tcm = hour(time_close, TZ) * 60 + minute(time_close, TZ)
+    dk  = year(time, TZ) * 10000 + month(time, TZ) * 100 + dayofmonth(time, TZ)
+    rth = tm >= OPEN_MIN and tm < RTH_END
+    var float curC = na
+    var float curH = na
+    var float curL = na
+    var float pC   = na
+    var float pH   = na
+    var float pL   = na
+    var int   cDay = na
+    var float onH  = na
+    var float onL  = na
+    var float oO   = na
+    var float oH   = na
+    var float oL   = na
+    var float oOnH = na
+    var float oOnL = na
+    var int   oDay = na
+    var int   prevTm = na
+    // rango overnight: empieza en la primera vela desde las 18:00
+    if tm >= ON_START and (na(prevTm) or prevTm < ON_START)
+        onH := high
+        onL := low
+    else if tm >= ON_START or tm < OPEN_MIN
+        onH := na(onH) ? high : math.max(onH, high)
+        onL := na(onL) ? low : math.min(onL, low)
+    prevTm := tm
+    if rth
+        if na(cDay) or dk != cDay
+            pC := curC
+            pH := curH
+            pL := curL
+            cDay := dk
+            curH := high
+            curL := low
+        else
+            curH := math.max(curH, high)
+            curL := math.min(curL, low)
+        curC := close
+    if rth and tm == OPEN_MIN
+        oDay := dk
+        oO   := open
+        oH   := high
+        oL   := low
+        oOnH := onH
+        oOnL := onL
+    else if rth and tm < OR_END and oDay == dk
+        oH := math.max(oH, high)
+        oL := math.min(oL, low)
+    done = rth and oDay == dk and tcm == OR_END
+    [done, oO, oH, oL, close, oOnH, oOnL, pH, pL, pC]
+
+// Puntaje y validez de la señal de un mercado (mismas reglas que futbot/strategies/puntaje.py)
+signal(bool done, float oO, float oH, float oL, float oC, float onH, float onL, float pH, float pL, float pC, float atr, float pv, float cost, bool monday) =>
+    dir    = oC > oO ? 1 : oC < oO ? -1 : 0
+    gapAtr = math.abs(oO - pC) / atr
+    rng    = oH - oL
+    mid    = (oH + oL) / 2
+    stop   = dir > 0 ? roundDown(mid) : roundUp(mid)
+    risk   = (oC - stop) * dir
+    body   = rng > 0 ? math.abs(oC - oO) / rng : 0.0
+    sOn    = (dir > 0 ? oC > onH : oC < onL) ? 30.0 : 0.0
+    sBody  = 25.0 * clamp01((body - 0.3) / 0.5)
+    sGap   = na(gapAtr) ? 0.0 : 20.0 * clamp01((gapAtr - 0.15) / 0.45)
+    sPd    = (dir > 0 ? oO > pH : oO < pL) ? 15.0 : 0.0
+    sMon   = monday ? 10.0 : 0.0
+    score  = math.floor(sOn + sBody + sGap + sPd + sMon + 0.5)
+    nCt    = risk > 0 ? math.min(maxQty, math.floor(riskUsd / (risk * pv))) : 0
+    why    = not done ? "sin datos" : na(gapAtr) or gapAtr < minGapAtr ? "gap chico" : dir == 0 ? "vela sin dirección" : rng < 4 * TICK ? "vela muy chica" : risk <= 0 ? "cierre detrás de la mitad" : risk < 5 * cost ? "stop muy cerca" : score < minScore ? "puntaje " + str.tostring(score) + " < " + str.tostring(minScore) : nCt < 1 ? "riesgo " + fMoney(risk * pv) + " > " + fMoney(riskUsd) : ""
+    detail = "overnight " + str.tostring(sOn, "0") + " · cuerpo " + str.tostring(sBody, "0") + " · gap " + str.tostring(sGap, "0") + " · fuera de ayer " + str.tostring(sPd, "0") + " · lunes " + str.tostring(sMon, "0")
+    [dir, stop, risk, score, nCt, why, detail, gapAtr]
+
+tkFor(simple string sym) => ticker.modify(sym, session = session.extended, backadjustment = adjRolls ? backadjustment.on : backadjustment.inherit, settlement_as_close = settlement_as_close.off)
+tkNq = tkFor(nqSym)
+tkEs = tkFor(esSym)
+[nDone, nO, nH, nL, nC, nOnH, nOnL, nPH, nPL, nPC] = request.security(tkNq, timeframe.period, orData(), gaps = barmerge.gaps_on)
+[eDone, eO, eH, eL, eC, eOnH, eOnL, ePH, ePL, ePC] = request.security(tkEs, timeframe.period, orData(), gaps = barmerge.gaps_on)
+nAtr = request.security(tkNq, "D", ta.atr(atrLen)[1], lookahead = barmerge.lookahead_on)
+eAtr = request.security(tkEs, "D", ta.atr(atrLen)[1], lookahead = barmerge.lookahead_on)
+
+// ------------------------------------------------------------------- Tiempo del gráfico
+tMin   = hour(time, TZ) * 60 + minute(time, TZ)
+tcMin  = hour(time_close, TZ) * 60 + minute(time_close, TZ)
+dayKey = year(time, TZ) * 10000 + month(time, TZ) * 100 + dayofmonth(time, TZ)
+inRth  = tMin >= OPEN_MIN and tMin < RTH_END
+tfOk   = timeframe.isminutes and (timeframe.multiplier == 1 or timeframe.multiplier == 5)
+root   = syminfo.root
+chartMkt = root == "NQ" or root == "MNQ" ? 1 : root == "ES" or root == "MES" ? 2 : 0
+pvChart = syminfo.pointvalue
+monday = dayofweek(time, TZ) == dayofweek.monday
+
+var int   orDay = na
+var float orH   = na
+var float orL   = na
+if inRth and tMin == OPEN_MIN
+    orDay := dayKey
+    orH   := high
+    orL   := low
+else if inRth and tMin < OR_END and orDay == dayKey
+    orH := math.max(orH, high)
+    orL := math.min(orL, low)
+
+var float stop0   = na
+var int   dir0    = 0
+var int   qty0    = 0
+var int   qPart   = 0
+var bool  partSet = false
+var bool  beSet   = false
+
+// ------------------------------------------------------------------- Señal (9:35) y entrada
+orDone = barstate.isconfirmed and tfOk and inRth and orDay == dayKey and tcMin == OR_END
+if orDone and strategy.position_size == 0
+    [nDir, nStop, nRisk, nScore, nQty, nWhy, nDet, nGap] = signal(nDone, nO, nH, nL, nC, nOnH, nOnL, nPH, nPL, nPC, nAtr, pvNq, costNq, monday)
+    [eDir, eStop, eRisk, eScore, eQty, eWhy, eDet, eGap] = signal(eDone, eO, eH, eL, eC, eOnH, eOnL, ePH, ePL, ePC, eAtr, pvEs, costEs, monday)
+    nOk = nWhy == ""
+    eOk = eWhy == ""
+    sel = selMode == "Mejor puntaje" ? (nOk and (not eOk or nScore >= eScore) ? 1 : eOk ? 2 : 0) : (nOk ? 1 : eOk ? 2 : 0)
+    if chartMkt != 0 and sel == chartMkt
+        myDir   = chartMkt == 1 ? nDir : eDir
+        myScore = chartMkt == 1 ? nScore : eScore
+        mid  = (orH + orL) / 2
+        stop = myDir > 0 ? roundDown(mid) : roundUp(mid)
+        rk   = (close - stop) * myDir
+        q    = rk > 0 ? math.min(maxQty, math.floor(riskUsd / (rk * pvChart))) : 0
+        if q >= 1
+            qp = usePart and q >= 2 ? math.floor(q / 2) : 0
+            stop0 := stop
+            dir0  := myDir
+            qty0  := q
+            qPart := qp
+            partSet := false
+            beSet := false
+            id = myDir > 0 ? "Compra" : "Venta"
+            strategy.entry(id, myDir > 0 ? strategy.long : strategy.short, qty = q, comment = id + " " + str.tostring(myScore))
+            // salidas con la entrada estimada (cierre de las 9:35); se recalculan con el precio real
+            if qp > 0
+                strategy.exit("TP1", id, qty = qp, stop = stop, limit = close + myDir * partR * rk, comment_profit = "TP1", comment_loss = "Stop")
+            strategy.exit("Resto", id, stop = stop, limit = close + myDir * targetR * rk, comment_profit = "TP", comment_loss = "Stop")
+
+// ------------------------------------------------------------------- Gestión con el precio de entrada real
+if strategy.position_size != 0
+    id    = dir0 > 0 ? "Compra" : "Venta"
+    entry = strategy.position_avg_price
+    risk  = math.abs(entry - stop0)
+    tp1   = math.round((entry + dir0 * partR * risk) / TICK) * TICK
+    tp    = math.round((entry + dir0 * targetR * risk) / TICK) * TICK
+    open1 = math.abs(strategy.position_size)
+    if not partSet
+        if qPart > 0
+            strategy.exit("TP1", id, qty = qPart, stop = stop0, limit = tp1, comment_profit = "TP1", comment_loss = "Stop")
+        strategy.exit("Resto", id, stop = stop0, limit = tp, comment_profit = "TP", comment_loss = "Stop")
+        partSet := true
+    if qPart > 0 and open1 < qty0 and not beSet
+        strategy.exit("Resto", id, stop = entry, limit = tp, comment_profit = "TP", comment_loss = "Stop en la entrada")
+        beSet := true
+    if barstate.isconfirmed and tcMin >= EXIT_MIN
+        strategy.close_all(comment = "Salida " + fHM(EXIT_MIN), immediately = true)

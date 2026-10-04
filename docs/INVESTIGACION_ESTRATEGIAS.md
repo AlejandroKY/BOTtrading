@@ -17,12 +17,12 @@
 3. **"Pasar fondeos fácilmente" no existe.** Una estrategia sin ventaja (Sharpe 0) aprueba un 23-26 % de las evaluaciones *por pura suerte*; para aprobar 65-75 % de las veces necesitas Sharpe ≥ 2 **y** un tamaño prudente. En la industria aprueba un 5-15 % de quienes compran evaluaciones y cobra alguna vez ~7 %.
 4. Las mejores candidatas para tu nuevo bot: **(1) Noise Area en NQ** y **(2) ORB de 5 minutos en NQ**, seguidas de **CL primera media hora** y **ruptura del rango asiático en oro** como diversificadoras. Antes de arriesgar dinero hay que **re-validarlas con datos reales de CME 2019-2026** (ver sección 5): el kit ya está preparado para eso.
 
-> **Actualización (octubre de 2026):** la estrategia del bot de TradingView es un trade rápido en NQ.
-> Se opera el ORB de 5 minutos solo en días "en juego" (gap ≥ 0,30 ATR), con el stop en la mitad de la vela de
-> 9:30-9:35 y salida como máximo a las 10:35. Se validó con datos reales de MNQ 2019-2026 (+0,30R por operación neto,
-> 8 de 8 años positivos). La versión anterior, con salida a las 11:30, rindió solo +0,08R con esos datos.
-> Reglas, números y guía en [ESTRATEGIA_TRADINGVIEW.md](ESTRATEGIA_TRADINGVIEW.md); el indicador está en
-> [`pine/orb5_nq_rapido.pine`](../pine/orb5_nq_rapido.pine).
+> **Actualización (octubre de 2026):** el bot de TradingView opera el ORB de 5 minutos en NQ (y ES de respaldo) con
+> un puntaje de calidad 0-100: rango overnight, fuerza de la vela, gap, rango de ayer y lunes. Se opera con 40 o más,
+> la mitad sale en +2R con stop a la entrada y el resto a las 10:35. Con NQ real 2019-2026: 43 % de acierto,
+> +0,37R por operación, 8 de 8 años positivos. Reglas, resultados y guía en
+> [ESTRATEGIA_TRADINGVIEW.md](ESTRATEGIA_TRADINGVIEW.md); el indicador está en
+> [`pine/orb5_puntaje.pine`](../pine/orb5_puntaje.pine).
 
 ---
 

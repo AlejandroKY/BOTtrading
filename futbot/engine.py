@@ -14,6 +14,10 @@ Supuestos de ejecución (conservadores a propósito):
 - Los precios de ejecución se redondean al tick del contrato en contra del trader. Con datos de
   precio medio (CFDs, mid quotes) ese redondeo + 0,5 tick equivale a cruzar el spread.
 - Comisión de ida y vuelta por contrato descontada al cerrar cada trade.
+- Salida parcial opcional (`partial_r`/`partial_qty`): un límite que cierra parte de la posición;
+  con `be_after_partial` el stop del resto pasa a la entrada desde la barra siguiente. Si en la
+  misma barra se tocan el stop y el parcial, cuenta primero el stop. El trade se registra en una
+  sola fila con los puntos promediados por contrato.
 """
 
 from __future__ import annotations
@@ -59,6 +63,9 @@ class Order:
     target_offset: Optional[float] = None  # ...o distancia en puntos
     target_r: Optional[float] = None  # ...o múltiplo del riesgo inicial (R)
     reason: str = ""
+    partial_r: Optional[float] = None  # salida parcial a este múltiplo del riesgo...
+    partial_qty: int = 0  # ...con estos contratos
+    be_after_partial: bool = False  # tras el parcial, el stop del resto pasa a la entrada
 
 
 def iter_sessions(
@@ -95,6 +102,15 @@ def iter_sessions(
         )
 
 
+def _bar_minutes(index: pd.DatetimeIndex) -> int:
+    """Duración típica de las barras en minutos (mediana de las diferencias positivas)."""
+    if len(index) < 2:
+        return 1
+    d = pd.Series(index[:20000]).diff().dt.total_seconds().to_numpy()[1:] / 60.0  # independiente de la resolución
+    d = d[d > 0]
+    return max(1, int(round(float(np.median(d))))) if len(d) else 1
+
+
 class Context:
     """Lo que ve la estrategia: barras de la sesión actual, historial diario y órdenes."""
 
@@ -112,6 +128,7 @@ class Context:
         self.S: list = []  # minuto de sesión de cada barra (ver `sm`)
         self.n = 0
         self.i = 0
+        self.bar_minutes: int = engine.bar_minutes  # duración de cada barra (1 = velas de 1 minuto)
 
     # ---- estado -------------------------------------------------------------------------
     @property
@@ -204,6 +221,7 @@ class Engine:
         self.dll = daily_loss_limit
         self.max_trades = max_trades_per_day
         self.start, self.end = start, end
+        self.bar_minutes = _bar_minutes(data.index)
         self.settings = dict(
             slippage_ticks=slippage_ticks,
             stop_slippage_ticks=stop_slippage_ticks,
@@ -227,11 +245,14 @@ class Engine:
 
     def submit(self, side: int, kind: str, price: Optional[float], qty: int, *, tag: str = "",
                oco: Optional[str] = None, stop=None, stop_offset=None, target=None,
-               target_offset=None, target_r=None) -> int:
+               target_offset=None, target_r=None, partial_r=None, partial_qty=0,
+               be_after_partial=False) -> int:
         if qty <= 0:
             raise ValueError("qty debe ser > 0")
+        if partial_r is not None and not 0 < partial_qty < qty:
+            partial_r, partial_qty = None, 0  # con 1 contrato no hay parcial
         od = Order(self.new_id(), side, int(qty), kind, price, True, tag, oco, stop, stop_offset,
-                   target, target_offset, target_r)
+                   target, target_offset, target_r, "", partial_r, int(partial_qty), be_after_partial)
         self.orders.append(od)
         return od.id
 
@@ -277,6 +298,15 @@ class Engine:
         self.pos_tag = ""
         self.pos_hi = -math.inf
         self.pos_lo = math.inf
+        self.pos_qty0 = 0
+        self.pos_partial: Optional[float] = None
+        self.pos_partial_qty = 0
+        self.pos_be = False
+        self.pos_part_points = 0.0  # puntos x contratos ya cerrados en el parcial
+        self.pos_part_pnl = 0.0
+        self.pos_part_px: Optional[float] = None
+        self._pending_be = False
+        self._stop0: Optional[float] = None
 
     def _begin_day(self) -> None:
         self.orders = []
@@ -314,6 +344,9 @@ class Engine:
     # ---- ejecución ----------------------------------------------------------------------------
     def _process_orders(self, i: int) -> None:
         o, h, l = self.O[i], self.H[i], self.L[i]
+        if self._pending_be and self.pos_side:  # breakeven tras el parcial de la barra anterior
+            self.pos_stop = self.pos_entry
+            self._pending_be = False
         exited = False
         markets = [od for od in self.orders if od.kind == "market"]
         if markets:
@@ -382,6 +415,11 @@ class Engine:
                 return False
         self.pos_side, self.pos_qty, self.pos_entry = od.side, od.qty, px
         self.pos_stop, self.pos_target, self.pos_risk = stop, target, risk
+        self.pos_qty0 = od.qty
+        self._stop0 = stop
+        if od.partial_r is not None and risk:
+            self.pos_partial = c.round_nearest(px + od.side * od.partial_r * risk)
+            self.pos_partial_qty, self.pos_be = od.partial_qty, od.be_after_partial
         self.pos_i, self.pos_tag = i, od.tag
         self.pos_hi = self.pos_lo = px
         self.trades_today += 1
@@ -391,8 +429,16 @@ class Engine:
         side, stop, target = self.pos_side, self.pos_stop, self.pos_target
         if stop is not None and ((side > 0 and l <= stop) or (side < 0 and h >= stop)):
             fill = stop if same_bar else (min(o, stop) if side > 0 else max(o, stop))
-            self._close(i, fill - side * self.stop_slip, "stop")
-        elif allow_target and target is not None and (
+            reason = "stop_be" if self.pos_part_px is not None and stop == self.pos_entry else "stop"
+            self._close(i, fill - side * self.stop_slip, reason)
+            return
+        pt = self.pos_partial
+        if pt is not None and self.pos_part_px is None and allow_target and (
+            (side > 0 and h >= pt + self.pen) or (side < 0 and l <= pt - self.pen)
+        ):
+            fill = pt if same_bar else (max(o, pt) if side > 0 else min(o, pt))
+            self._take_partial(fill)
+        if allow_target and target is not None and (
             (side > 0 and h >= target + self.pen) or (side < 0 and l <= target - self.pen)
         ):
             fill = target if same_bar else (max(o, target) if side > 0 else min(o, target))
@@ -422,23 +468,38 @@ class Engine:
             return
         self._update_eq(best, worst)
 
+    def _take_partial(self, raw_px: float) -> None:
+        """Cierra `pos_partial_qty` contratos (límite: sin slippage) y, si corresponde, stop a la entrada."""
+        c = self.contract
+        side, entry, q = self.pos_side, self.pos_entry, self.pos_partial_qty
+        px = c.round_nearest(raw_px)
+        points = (px - entry) * side
+        pnl = points * c.point_value * q - c.commission_rt * q
+        self.pos_part_points, self.pos_part_pnl, self.pos_part_px = points * q, pnl, px
+        self.pos_qty -= q
+        self.realized += pnl
+        if self.pos_be:
+            self._pending_be = True
+
     def _close(self, i: int, raw_px: float, reason: str) -> None:
         c = self.contract
         side, qty, entry = self.pos_side, self.pos_qty, self.pos_entry
         px = c.round_down(raw_px) if side > 0 else c.round_up(raw_px)
         hi, lo = max(self.pos_hi, px), min(self.pos_lo, px)
-        points = (px - entry) * side
-        pnl = points * c.point_value * qty - c.commission_rt * qty
+        points_rest = (px - entry) * side
+        pnl_rest = points_rest * c.point_value * qty - c.commission_rt * qty
+        qty0 = self.pos_qty0 or qty
+        points = (points_rest * qty + self.pos_part_points) / qty0  # promedio por contrato
         self.trades.append(dict(
-            entry_time=self.index[self.pos_i], exit_time=self.index[i], side=side, qty=qty,
-            entry=entry, exit=px, stop=self.pos_stop, target=self.pos_target,
-            points=points, pnl=pnl,
+            entry_time=self.index[self.pos_i], exit_time=self.index[i], side=side, qty=qty0,
+            entry=entry, exit=px, stop=self.pos_stop if self.pos_part_px is None else self._stop0,
+            target=self.pos_target, points=points, pnl=pnl_rest + self.pos_part_pnl,
             r=(points / self.pos_risk) if self.pos_risk else np.nan,
             mae=((lo - entry) if side > 0 else (entry - hi)),
             mfe=((hi - entry) if side > 0 else (entry - lo)),
-            reason=reason, tag=self.pos_tag,
+            reason=reason, tag=self.pos_tag, partial=self.pos_part_px,
         ))
-        self.realized += pnl
+        self.realized += pnl_rest
         self._reset_position()
         self._update_eq(self.realized, self.realized)
         if self.dll is not None and self.realized <= -self.dll:
@@ -446,7 +507,7 @@ class Engine:
 
 
 TRADE_COLUMNS = ["entry_time", "exit_time", "side", "qty", "entry", "exit", "stop", "target",
-                 "points", "pnl", "r", "mae", "mfe", "reason", "tag"]
+                 "points", "pnl", "r", "mae", "mfe", "reason", "tag", "partial"]
 DAY_COLUMNS = ["date", "pnl", "trades", "min_eq", "max_eq", "max_dd"]
 
 

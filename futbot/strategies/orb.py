@@ -74,7 +74,7 @@ class ORBZarattini(Strategy):
             self.first_open = ctx.O[i]
         self.hi = max(self.hi, ctx.H[i])
         self.lo = min(self.lo, ctx.L[i])
-        if s == self.t_or - 1:
+        if s + ctx.bar_minutes >= self.t_or:  # última barra del rango (1 o 5 min)
             self.done = True
             if self.hi - self.lo < self.p["min_range_ticks"] * ctx.contract.tick_size:
                 return

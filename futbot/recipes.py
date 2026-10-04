@@ -40,6 +40,13 @@ RECIPES: dict[str, Recipe] = {
                "(docs/ESTRATEGIA_TRADINGVIEW.md)",
                dict(window_start="09:30", window_end="10:35", mode="market", or_minutes=5, stop_mode="mid",
                     target_r=10.0, min_gap_atr=0.3, direction="both", min_risk_pts=6.0)),
+        Recipe("nq_orb5_puntaje", "orb_puntaje", "MNQ", "NQ · ORB 5 min con puntaje >= 40 (bot de TradingView)",
+               "ORB 5 min + puntaje de calidad (overnight, cuerpo, gap, rango de ayer, lunes); mitad a 2R y stop a "
+               "la entrada, resto a 10R o 10:35. Ver docs/ESTRATEGIA_TRADINGVIEW.md",
+               dict(min_risk_pts=6.0, risk_usd=200.0)),
+        Recipe("es_orb5_puntaje", "orb_puntaje", "MES", "ES · ORB 5 min con puntaje >= 40 (respaldo de NQ)",
+               "Mismas reglas que nq_orb5_puntaje; stop mínimo 4 puntos (5 veces el costo en MES)",
+               dict(min_risk_pts=4.0, risk_usd=200.0)),
         Recipe("nq_orb5_atr", "orb_zarattini", "MNQ", "NQ · ORB 5 min, stop 10% ATR, salida al cierre",
                "Zarattini, Barbon & Aziz (2024), SSRN 4729284",
                dict(IDX, or_minutes=5, stop_atr=0.10, target_r=None)),

@@ -118,7 +118,7 @@ class OpeningQuick(Strategy):
                     self.first_open = ctx.O[i]
                 self.hi = max(self.hi, ctx.H[i])
                 self.lo = min(self.lo, ctx.L[i])
-            if s < self.t_or - 1:
+            if s + ctx.bar_minutes < self.t_or:
                 return
             if self.hi - self.lo < p["min_range_ticks"] * self.tick or self.first_open is None:
                 self.state = "done"
@@ -145,7 +145,7 @@ class OpeningQuick(Strategy):
         if p["mode"] == "pullback":
             if ctx.position or ctx.trades_today:
                 self.state = "done"
-            elif s >= self.t_dead - 1:
+            elif s + ctx.bar_minutes >= self.t_dead:
                 ctx.cancel_entries()
                 self.state = "done"
             return
@@ -153,7 +153,7 @@ class OpeningQuick(Strategy):
         if s >= self.t_dead:
             self.state = "done"
             return
-        if (s + 1 - self.t0) % p["confirm_minutes"]:
+        if (s + ctx.bar_minutes - self.t0) % p["confirm_minutes"]:
             return
         c = ctx.C[i]
         side = 1 if c > self.hi else -1 if c < self.lo else 0

@@ -142,7 +142,7 @@ def cmd_stats(args) -> None:
     print(f"\nRiesgo mediano por trade: {risk_pts.median():.2f} puntos; costo ≈ {cost_pts:.2f} puntos "
           f"= {cost_pts / risk_pts.median():.3f} R por trade con ese riesgo.")
     net = r_summary(r_net)
-    print(f"Compáralo con el panel del Pine ('En este gráfico' / 'Backtest 2019-26'): acierto "
+    print(f"Compáralo con el panel del Pine ('En este gráfico' / 'Backtest NQ 19-26'): acierto "
           f"{100 * net['win_rate']:.0f} %, R medio neto {net['exp_r']:+.2f} (bruto {gross['exp_r']:+.2f}).")
 
 
@@ -172,7 +172,8 @@ def main(argv=None) -> None:
         p.add_argument("--symbol", help="contrato: ES, MES, NQ, MNQ, GC, MGC, CL, MCL, ZN, 6E, M6E...")
         p.add_argument("--param", action="append", help="parámetro de la estrategia, p.ej. target_r=2")
         p.add_argument("--csv", help="CSV propio de 1 minuto (acepta comodines)")
-        p.add_argument("--tz", default="UTC", help="zona horaria del CSV si viene sin zona (por defecto UTC)")
+        p.add_argument("--tz", default="UTC", help="zona horaria del CSV si viene sin zona (por defecto UTC); "
+                       "'mt5' para exportaciones de MetaTrader 5 como data/oanda/")
         p.add_argument("--fmt", default="auto", choices=["auto", "ninjatrader"])
         p.add_argument("--futuresharks-dir", help="ruta al clon de FutureSharks/financial-data")
         p.add_argument("--start")

@@ -1,249 +1,287 @@
-# Bot de señales para TradingView: ORB 5 minutos rápido en el Nasdaq (NQ / MNQ)
+# Bot de señales para TradingView: ORB 5 minutos con puntaje (NQ y ES)
 
 *Octubre de 2026. Herramienta de estudio, no asesoría financiera. Operar futuros puede hacerte perder más de lo que pones.*
 
-El indicador está en [`pine/orb5_nq_rapido.pine`](../pine/orb5_nq_rapido.pine). Te dice **si hoy se opera, cuándo comprar o vender, dónde va el stop, cuántos contratos usar y a qué hora salir**, y te avisa al celular. Sus reglas son exactamente las de la receta `nq_orb5_rapida` del kit `futbot`. Lo verifiqué traduciendo el Pine línea a línea a Python: con 7 años de datos reales de CME coinciden las 543 operaciones, tanto en gráfico de 1 minuto como de 5 minutos.
+**Archivos:**
+- [`pine/orb5_puntaje.pine`](../pine/orb5_puntaje.pine) es el **indicador**. Te dice si hoy se opera, en qué mercado (NQ o ES), el **puntaje de calidad (0-100)** de la señal, la dirección, el stop, el parcial, los contratos y la hora de salida, y te avisa al celular.
+- [`pine/orb5_puntaje_estrategia.pine`](../pine/orb5_puntaje_estrategia.pine) es la misma lógica en versión **estrategia**, para ver el backtest en el *Probador de estrategias* de TradingView.
 
-**Qué cambió respecto de la versión anterior** (`orb5_nq_senales.pine`, que mantenía la operación hasta las 11:30):
-- Al probarla con datos reales de CME 2019-2026, la versión anterior dio apenas **+0,08R por operación**, y en 2026 perdía (−0,15R). Por eso la reemplacé.
-- La nueva versión es un **trade rápido**: la mitad de las operaciones termina en menos de 7 minutos y ninguna dura más de 60.
-- Con los mismos datos rinde **+0,30R por operación**, y los 8 años son positivos.
-- Las etiquetas ya no se superponen y el indicador no muestra señales contradictorias. Si una señal no se puede operar, sale en gris con el motivo.
+Las reglas son exactamente las de las recetas `nq_orb5_puntaje` y `es_orb5_puntaje` de `futbot`. Lo verifiqué traduciendo el Pine línea a línea a Python y comparándolo con futbot. En 7 años de NQ real coinciden las 335 operaciones, tanto en gráfico de 1 minuto como de 5. En los datos de OANDA 2025-26 de NQ y ES coinciden también las operaciones, los motivos de salida y los contratos.
 
 ---
 
-## 1. Qué esperar (léelo antes de usarlo)
+## 1. Lo que pediste y lo que dicen los datos
+
+| Pediste | Resultado con datos reales |
+|---|---|
+| Trades con puntaje de 80 o más | **Existen y son los mejores**: 60 % de acierto y +0,93R por operación en NQ 2019-2026. Pero aparecen **~6 veces al año**. Por eso el umbral recomendado es **40**, que da ~1 trade por semana con 43 % de acierto. El umbral se cambia en la configuración |
+| Buen acierto | **43-46 %**, contra 24 % del bot anterior. Lo logra la salida parcial: la mitad de los contratos sale en +2R y el resto queda protegido en la entrada |
+| Lo más importante, ganancia | **+0,37R por operación neto de costos** en NQ 2019-2026: con $200 por operación, ~$260 por mes solo con NQ. Con ES de respaldo, ~$360 por mes en 2025-26 |
+| Al menos 3 trades por semana | **No se puede sin perder calidad.** Con NQ y ES entre 9:30 y 11:30 salen ~1-1,3 trades por semana. Solo el 4-15 % de las semanas trae 3 o más. Todo lo que probé para sumar trades perdió plata (sección 10) |
+| Aguantar solo 3-4 pérdidas seguidas | Con 43 % de acierto, una racha de 5-8 pérdidas es normal. La peor fue de **8** en 2019-2026 y de 5 en 2025-26. Con $200 por operación son ~$1.600, por debajo del límite de $2.000 de la cuenta |
+| Lo mejor para una cuenta de fondeo de 50K | **LucidFlex 50K**, con $200 por operación (sección 4) |
+
+---
+
+## 2. Qué esperar
 
 | | |
 |---|---|
-| Mercado | Nasdaq-100: MNQ (micro, $2/punto) o NQ (mini, $20/punto) |
-| Horario | La señal llega a las **9:35** de Nueva York y la operación termina como máximo a las **10:35** |
-| Duración | Mediana **7 minutos**. Los stops saltan en ~3 minutos y el 75 % de las operaciones dura menos de 40 minutos |
-| Señales | ~76 al año, **1 o 2 por semana**. Solo hay señal en los días "en juego" (gap grande) |
-| Acierto | **~24 %**: pierdes 3 de cada 4 operaciones |
-| Cuando pierdes | En promedio −1,07R (casi siempre exactamente lo arriesgado) |
-| Cuando ganas | En promedio **+4,5R**. Las pocas operaciones grandes pagan todas las pérdidas |
-| Ganancia media | **+0,30R por operación**, ya descontados comisión y deslizamiento (1,2 puntos por operación) |
-| Rachas | La peor racha de 2019-2026 fue de **18 pérdidas seguidas** |
-| Meses | En 2024-2026, solo **16 de 32 meses** fueron positivos (peor mes −$1.078, mejor +$3.464, con $150 por operación) |
-
-**No hay 80 % de acierto, y no lo voy a inventar.** Probé setups de acierto alto (objetivos de 1R, comprar retrocesos, ir contra la primera vela y un modelo de probabilidad): todos perdieron después de costos (sección 9). Esta estrategia gana porque aguanta muchas pérdidas chicas para cobrar pocas ganancias grandes. Si cierras las ganadoras temprano (por ejemplo en 3R), la ventaja desaparece.
+| Mercados | **NQ primero**; ES solo si NQ no califica. Se ejecuta en micro: MNQ ($2/punto) o MES ($5/punto) |
+| Horario | La señal llega a las **9:35** de Nueva York (10:35 en Chile) y la operación termina como máximo a las **10:35** |
+| Duración | Mediana de 12 minutos (los stops saltan en ~4); ninguna dura más de 60 |
+| Frecuencia | ~1 a 1,3 por semana. Hay semanas sin trades: 28-36 % |
+| Acierto | **~43-46 %** |
+| Ganancia media | **+0,37R por operación** en NQ 2019-2026 y +0,31R en NQ+ES 2025-26, ya descontados comisión y deslizamiento |
+| Peor racha | 8 pérdidas seguidas (2019-2026) |
+| Meses positivos | 57 % en NQ 2019-2026 (peor mes −$885, mejor +$2.973 con $200 por operación) y 11 de 17 en 2025-26 |
+| Caída máxima | −$1.911 (NQ 2019-2026) y −$1.259 (NQ+ES 2025-26), con $200 por operación |
 
 ---
 
-## 2. Confirmación con datos reales de 2024, 2025 y 2026
+## 3. Resultados
 
-**Datos:** velas de 1 minuto del micro Nasdaq MNQ de CME, de mayo de 2019 al 3 de septiembre de 2026, publicadas por Databento en el repositorio público [vinentHuynh/QuantResearch](https://github.com/vinentHuynh/QuantResearch). Les quité el salto de cada cambio de contrato (roll). Los datos no están en este repo porque tienen licencia de CME: puedes bajar los tuyos con el script de Databento (sección 7).
+### NQ real (futuros MNQ de CME) 2019-2026, $200 por operación
 
-**Resultado año por año.** Es lo que habría mostrado el indicador con $150 de riesgo por operación en MNQ, a los precios de cada año y neto de costos:
-
-| Año | Operaciones | Acierto | R medio | Resultado | Peor caída del año |
-|---|---|---|---|---|---|
-| 2019 (desde mayo) | 23 | 30 % | +0,01R | −$76 | −$948 |
-| 2020 | 78 | 21 % | +0,03R | +$453 | −$2.750 |
-| 2021 | 73 | 25 % | +0,63R | +$6.546 | −$1.211 |
-| 2022 | 74 | 26 % | +0,44R | +$4.563 | −$2.000 |
-| 2023 | 65 | 22 % | +0,11R | +$1.048 | −$2.333 |
-| **2024** | **79** | **25 %** | **+0,27R** | **+$1.863** | **−$3.145** |
-| **2025** | **86** | **29 %** | **+0,56R** | **+$6.399** | **−$1.256** |
-| **2026 (a sept.)** | **65** | **22 %** | **+0,11R** | **+$1.772** | **−$1.448** |
-| **Total** | **543** | **24 %** | **+0,30R** | **+$22.567** | |
-
-**Otras pruebas:**
-- **Otra fuente para 2026.** Con NQ de abril a septiembre de 2026 (getdata-finance), las señales coinciden 100 % en dirección con las de MNQ. El resultado fue +0,12R por operación en 36 operaciones.
-- **Antes de 2019.** Con el CFD del Nasdaq de Oanda dio +0,24R en 2005-2014 (629 operaciones) y +0,30R en 2015-2020 (418 operaciones), con los costos llevados a los precios de hoy. No son futuros reales, pero en 2019-2020, donde se solapan con MNQ, las señales coinciden en dirección el 100 % de las veces.
-- **Ambas direcciones ganan:** compras +0,18R y ventas +0,43R por operación.
-
-**Cómo se eligió, sin hacer trampa:**
-- Probé 144 variantes de trade rápido en MNQ real. Las ordené mirando **solo 2019-2022** y llevé las 3 mejores a **2023-2026**, con un criterio estricto fijado antes: R medio > 0 con t > 1,5.
-- **Ninguna pasó ese criterio.** La 1ª falló. La 2ª, que es esta, fue positiva en los dos períodos (+0,22R y +0,18R) y en 7 de 8 años, pero con t = 1,2. Es la mejor candidata, aunque la elegí después de ver 2023-2026.
-- Después agregué una regla de sentido común: **no operar si el stop queda a menos de 6 puntos**. Ahí las comisiones se comen entre el 25 % y el 150 % del riesgo.
-- Con esa regla quedó en +0,33R y +0,27R, con 8 de 8 años positivos.
-- Esa regla se decidió *después* de ver los datos. Además, la estadística por período es moderada (t de 1,7-1,8 en cada mitad y 2,4 en total). Hay ventaja, pero **no hay certeza**: puede tener rachas largas sin ganar, como 2019-2020, 2023 o la primera mitad de 2026.
-
----
-
-## 3. Probabilidad de aprobar Topstep 50K
-
-Reglas simuladas: objetivo $3.000, límite de $2.000 que sigue al cierre diario y regla de consistencia del 50 %. La simulación arranca una evaluación cada día de 2019-2026 con datos reales de MNQ llevados al precio de hoy. Usa contratos enteros de MNQ, calculados como lo hace el indicador.
-
-| Riesgo por operación | Aprueba | Suspende | No termina en 1 año | Tiempo típico hasta aprobar |
+| Año | Operaciones | Acierto | R medio | Resultado |
 |---|---|---|---|---|
-| $100 | 15 % | 10 % | 75 % | ~9-10 meses |
-| **$150 (recomendado)** | **47 %** | **38 %** | 16 % | ~6 meses (120 sesiones) |
-| $200 | 49 % | 48 % | 3 % | ~4,5 meses |
-| $300 | 39 % | 60 % | <1 % | ~4 meses |
+| 2019 (desde mayo) | 13 | 38 % | +0,19R | +$404 |
+| 2020 | 44 | 41 % | +0,11R | +$1.010 |
+| 2021 | 47 | 55 % | +0,91R | +$8.172 |
+| 2022 | 48 | 29 % | +0,14R | +$785 |
+| 2023 | 37 | 43 % | +0,29R | +$1.994 |
+| **2024** | **58** | **38 %** | **+0,42R** | **+$4.099** |
+| **2025** | **56** | **54 %** | **+0,59R** | **+$6.152** |
+| **2026 (a sept.)** | **32** | **38 %** | **+0,01R** | **+$607** |
+| **Total** | **335** | **43 %** | **+0,37R** | **+$23.224** |
 
-Es una ventaja real pero **lenta**, y es casi una moneda al aire si cuentas que la evaluación se paga cada mes. Arriesgar más acelera el camino, pero también hace más probable que una racha te elimine: en 2024 la caída máxima fue de $3.145 con $150 por operación, más que el límite de $2.000. **No es "fácil"**: nadie honesto puede prometer eso.
+Los 8 años son positivos, pero 2026 va casi en cero si se opera solo NQ. Con ES de respaldo, 2026 queda en +0,22R (OANDA).
+
+### El puntaje funciona
+
+| Puntaje | Operaciones (NQ 2019-26) | Acierto | R medio |
+|---|---|---|---|
+| 40-59 | 170 | 36 % | +0,10R |
+| 60-79 | 118 | 45 % | +0,54R |
+| **80+** | **47** | **60 %** | **+0,93R** |
+
+Pasa lo mismo en los datos que no se usaron para diseñarlo:
+- en 2023-2026, el grupo con 3-4 condiciones dio +0,4R a +1,5R;
+- en el S&P 500 y el Nasdaq de 2005-2020 también sube el resultado con el puntaje;
+- cambiar los pesos del puntaje no cambia el resultado.
+
+### NQ + ES en 2025-2026 (tus datos de OANDA, velas de 5 minutos)
+
+| | Operaciones | Por semana | Acierto | R medio | Resultado ($200) |
+|---|---|---|---|---|---|
+| NQ primero + ES respaldo | 93 (70 NQ + 23 ES) | 1,26 | 46 % | +0,31R | +$6.090 |
+| Solo NQ | 70 | 0,95 | 46 % | +0,24R | +$3.794 |
+
+### Historia larga (CFD de Oanda 2005-2020, NQ primero + ES respaldo)
+723 operaciones (0,9 por semana), 41 % de acierto y +0,31R por operación, con costos llevados a precios de hoy.
+
+### Comparado con el bot anterior (NQ real 2019-2026, $200 por operación)
+
+| | Bot anterior (ORB rápido) | Bot nuevo (con puntaje) |
+|---|---|---|
+| Operaciones | 549 | 335 |
+| Acierto | 24 % | **43 %** |
+| Peor racha | 18 pérdidas | **8** |
+| Ganancia total | $29.419 | $23.224 |
+| LucidFlex 50K: aprueba / suspende | 45 % / **51 %** | **56 % / 17 %** |
+
+El bot nuevo gana un poco menos en total, pero acierta casi el doble y quema la cuenta 3 veces menos. Para una cuenta de fondeo eso es lo que importa.
 
 ---
 
-## 4. Las reglas, con un ejemplo
+## 4. Cuenta de fondeo recomendada: LucidFlex 50K
 
-1. **Día en juego:** solo se opera si la apertura de las 9:30 quedó lejos del cierre de ayer (16:00). El gap tiene que ser de al menos **0,30 veces el ATR diario**, que es cuánto se mueve el NQ en un día normal (promedio de 14 días). Sin este filtro, la estrategia pierde.
-2. **9:30-9:35:** se forma la primera vela de 5 minutos. Si cerró **más arriba** de donde abrió → **COMPRA**. Si cerró **más abajo** → **VENTA**. Si cerró igual → nada.
-3. **Entrada:** a mercado a las 9:35.
-4. **Stop loss:** en la **mitad de esa vela**, redondeada al tick alejándose de la entrada. La distancia entre la entrada y el stop es tu riesgo (1R). Si el stop queda a menos de **6 puntos**, no se opera.
-5. **Take profit:** 10R. Está lejos a propósito y solo se toca un 3-4 % de las veces.
-6. **Salida por tiempo:** si a las **10:35** no tocó ni el stop ni el take profit, cierras a mercado.
-7. **Tamaño:** contratos = riesgo en USD ÷ (puntos hasta el stop × valor del punto), redondeando hacia abajo. Si no cabe ni 1 contrato, no se opera.
+En la simulación, Topstep, LucidFlex, Tradeify y MyFundedFutures dan casi la misma probabilidad. La simulación arranca una evaluación cada día del histórico, con contratos enteros y $200 por operación. Las cuatro tienen objetivo de $3.000 y límite de $2.000 al cierre diario.
+
+| Datos | Aprueba | Suspende | No termina en 1 año | Tiempo típico |
+|---|---|---|---|---|
+| NQ real 2019-2026 | 56 % | 16-17 % | 27-28 % | ~6 meses (120 sesiones) |
+| NQ+ES CFD 2005-2020 | 57 % | 22 % | 21 % | ~7 meses |
+| NQ+ES OANDA 2025-26 | 100 % | 0 % | 0 % | ~4,5 meses (96 sesiones) |
+
+Recomiendo **LucidFlex 50K** porque este bot es **lento**: tarda meses en llegar a $3.000. Por eso conviene una firma con **pago único y sin límite de tiempo**:
+- **LucidFlex 50K:** pago único (~$146), sin límite de tiempo, límite de $2.000 que sigue al cierre diario y se fija $100 sobre el saldo inicial. Consistencia del 50 % en la evaluación y ninguna una vez financiada.
+- **Topstep:** cobra ~$49 por mes, más ~$149 de activación. En 6 meses cuesta ~$440.
+- **MyFundedFutures:** el plan Rapid exige consistencia del 30 % (mal para este bot: un día de 10R pesaría demasiado); el Pro cuesta ~$265.
+- **Apex:** **no sirve** porque da solo 30 días. Con ~1 trade por semana casi nunca se llega.
+
+Las reglas cambian seguido: **verifícalas en la web de la firma antes de comprar** (precios de octubre de 2026). Pregunta también si permite operar a las 10:00, cuando salen datos económicos.
+
+---
+
+## 5. Las reglas, con un ejemplo
+
+1. **Día en juego:** la apertura de las 9:30 se aleja del cierre de ayer (16:00) al menos **0,15 veces el ATR diario**, que es el rango promedio de 14 días.
+2. **Vela de 9:30 a 9:35:** si cierra más arriba de donde abrió → **COMPRA**; si cierra más abajo → **VENTA**.
+3. **Stop:** en la **mitad de esa vela**, redondeada al tick alejándose de la entrada. No se opera si el stop queda a menos de 6 puntos en NQ o 4 en ES: las comisiones se comerían la ganancia.
+4. **Puntaje (0-100):**
+   - **30** si la vela cierra fuera del rango overnight a favor: sobre el máximo de 18:00-9:29 si compras, bajo el mínimo si vendes.
+   - **Hasta 25** según la fuerza de la vela. Es el cuerpo dividido por el rango: 30 % o menos = 0 puntos, 80 % o más = 25.
+   - **Hasta 20** según el tamaño del gap: 0,15 ATR = 0 puntos, 0,60 ATR o más = 20.
+   - **15** si la apertura de las 9:30 ya quedó fuera del rango de ayer a favor.
+   - **10** si es lunes (después del fin de semana hay más noticias acumuladas).
+5. **Se opera con puntaje de 40 o más.** NQ va primero. Si NQ no califica y ES sí, se opera ES. Nunca los dos el mismo día.
+6. **Tamaño:** contratos = $200 ÷ (puntos hasta el stop × valor del punto), redondeando hacia abajo.
+7. **Salidas:**
+   - **TP1 en +2R:** cierras la **mitad** de los contratos y mueves el stop del resto **a la entrada** (breakeven).
+   - El resto sale en **+10R** (casi nunca llega) o a las **10:35**.
+   - Si solo tienes 1 contrato, no hay parcial: queda con el stop original hasta 10R o las 10:35.
 
 **Ejemplo** (números inventados):
-- **El gap.** Ayer el NQ cerró en 24.000. Hoy abre a las 9:30 en 24.180 y el ATR diario es 450. El gap es de 180 puntos, y 180 / 450 = 0,40, que es al menos 0,30: es día en juego.
-- **La señal.** La vela de 9:30-9:35 va de un mínimo de 24.150 a un máximo de 24.250 y cierra en 24.230, más arriba de donde abrió (24.180): **COMPRA** a ~24.230.
-- **El stop.** La mitad de la vela es (24.250 + 24.150) / 2 = 24.200. Ese es el stop, a 30 puntos de la entrada.
-- **El tamaño.** Con MNQ, 30 puntos × $2 = $60 por contrato. Con $150 de riesgo operas **2 MNQ** (riesgo de $120).
-- **La salida.** El take profit queda en 24.530. Si a las 10:35 el precio está en 24.290, cierras con +60 puntos = **+2R** = +$240 menos comisiones.
+- **El gap.** Lunes. Ayer el NQ cerró en 24.000 y su rango de ayer fue 23.900-24.080. Durante la noche llegó como máximo a 24.170. Hoy abre a las 9:30 en 24.120 y el ATR es 400: gap = 120/400 = 0,30 ATR.
+- **La vela.** La vela de 9:30-9:35 abre en 24.120, va de 24.110 a 24.200 y cierra en 24.190: **COMPRA**.
+- **El puntaje:**
+  - cierra sobre el máximo overnight (24.190 > 24.170): **30**;
+  - cuerpo de 70/90 = 78 %: **24**;
+  - gap de 0,30 ATR: **7**;
+  - abrió sobre el máximo de ayer (24.120 > 24.080): **15**;
+  - lunes: **10**.
+  - Total: **86** → se opera, y es de las mejores.
+- **El stop y el tamaño.** El stop va en la mitad de la vela, 24.155, a 35 puntos. Con MNQ son 35 × $2 = $70 por contrato, así que con $200 operas **2 MNQ** (riesgo de $140).
+- **Las salidas.** El TP1 está en 24.190 + 70 = 24.260: ahí cierras 1 MNQ y mueves el stop del otro a 24.190. A las 10:35 cierras lo que quede.
 
 ---
 
-## 5. Instalarlo en TradingView
+## 6. Instalarlo en TradingView
 
-1. Abre el gráfico de **NQ1!** o **MNQ1!** en **5 minutos**. También funciona en 1 minuto; otras temporalidades no.
-2. Abajo, abre **Pine Editor** → *Nuevo*. Borra el contenido, pega todo el archivo [`pine/orb5_nq_rapido.pine`](../pine/orb5_nq_rapido.pine) y luego **Guardar** → **Añadir al gráfico**. Si tenías la versión anterior (*ORB 5m NQ · Señales*), quítala del gráfico.
-3. En la configuración del indicador (ícono de engranaje):
-   - **Riesgo por operación:** $150 para Topstep 50K.
-   - **Contrato que operas:** MNQ. Con $150 casi siempre son 1-3 MNQ.
-   - **Costo por operación:** 1,2 puntos (comisión + deslizamiento). Súbelo si tu comisión es mayor.
-   - **Stop mínimo:** 6 puntos.
-4. **Datos en tiempo real:** sin la suscripción de datos de CME, TradingView muestra los futuros con ~10 minutos de retraso y la señal te llegaría tarde. Para operar en vivo contrata los datos de CME, que se pagan aparte del plan. Para estudiar señales pasadas no hacen falta.
-5. **No configures nada más:**
-   - La hora de Nueva York ya está dentro del script.
-   - El gap y el ATR se calculan con datos **ajustados por cambio de contrato**, para evitar gaps falsos los días de roll (4 veces al año).
-   - Usa la sesión completa de Globex aunque tu gráfico muestre solo el horario regular.
+1. Abre **dos gráficos de 5 minutos**: **NQ1!** (o MNQ1!) y **ES1!** (o MES1!). Funciona también en 1 minuto; otras temporalidades no.
+2. En cada uno: **Pine Editor** → *Nuevo*. Pega [`pine/orb5_puntaje.pine`](../pine/orb5_puntaje.pine) → **Guardar** → **Añadir al gráfico**. Quita las versiones anteriores (*ORB5 rápido*, *ORB5 NQ*).
+3. Configuración (engranaje):
+   - **Riesgo por operación:** $200.
+   - **Contratos:** Micro (MNQ / MES).
+   - **Puntaje mínimo:** 40. Sube a 60 si prefieres menos trades y más acierto.
+   - Lo demás déjalo igual.
+4. Cada gráfico calcula el puntaje de **los dos** mercados y sabe cuál se opera hoy. El trade se dibuja solo en el gráfico del mercado elegido; el otro dice "se opera NQ" o "se opera ES".
+5. **Versión estrategia (opcional):** pega [`pine/orb5_puntaje_estrategia.pine`](../pine/orb5_puntaje_estrategia.pine) en un gráfico de **MNQ1!** o **MES1!** y abre el *Probador de estrategias*. Muestra el acierto, el profit factor y la curva de capital con los datos que tiene cargados TradingView.
+   - Usa los micro, porque el tamaño se calcula con el valor del punto del gráfico.
+   - Sus números pueden diferir un poco de los de futbot, porque TradingView decide el orden de stop y take profit dentro de cada vela.
 
 ### Qué vas a ver
 
 | En el gráfico | Qué significa |
 |---|---|
-| Rectángulo **gris** sobre la vela de 9:30 + texto "sin trade: …" | Hoy no se opera, y el motivo: gap chico, vela sin dirección, stop muy cerca o riesgo mayor a tu límite |
-| Rectángulo **verde o rojo** sobre la vela de 9:30 ("vela 9:30") | Esa vela dio la señal |
-| Línea punteada gris **"cierre ayer"** | Cierre de ayer a las 16:00. La distancia hasta la apertura de las 9:30 es el gap |
-| Etiqueta **COMPRA** (verde) o **VENTA** (roja) a las 9:35 | La señal. Pasa el mouse encima para ver el plan completo |
-| Línea gruesa + texto "entrada … · salir 10:35" | Precio de entrada y hora de salida |
-| Zona **roja** con "STOP … −$… · N MNQ" | Tu riesgo: de la entrada al stop, con contratos y dólares |
-| Zona **verde** con "máx +1,6R" | Hasta dónde llegó el precio a tu favor |
-| Etiqueta final **"+2,1R +$310"** o **"−1,0R −$150"** | El resultado neto de costos. Pasa el mouse para ver si salió por stop, por tiempo o por take profit |
-| **Panel** (arriba a la derecha) | Estado de hoy, señal, niveles, take profit, estado de la operación, estadísticas del gráfico y referencia del backtest |
-
-La fila "En este gráfico" del panel cuenta solo las operaciones del historial que TradingView tiene cargado, que suelen ser pocas semanas. Con tan pocas operaciones puede salir cualquier cosa por suerte. La referencia confiable es la de la sección 2.
+| Etiqueta **COMPRA 86** / **VENTA 64** a las 9:35 | La señal y su puntaje. Pasa el mouse para ver el plan completo y el detalle del puntaje |
+| Rectángulo verde o rojo "vela 9:30" | La vela que dio la señal |
+| Líneas azules **"máx overnight" / "mín overnight"** | El rango de la noche: si la vela cierra fuera, suma 30 puntos |
+| Línea gris **"cierre ayer"** | La distancia hasta la apertura es el gap |
+| Zona **roja** "STOP … −$… · N MNQ" | Tu riesgo: de la entrada al stop |
+| Zona **verde** "TP1 … · cerrar N y stop a la entrada" | El objetivo del parcial. Al tocarlo cambia a "TP1 ✓" |
+| Línea gruesa "entrada … · salir 10:35" | Entrada y hora límite |
+| Etiqueta final **"+1,5R +$270"** | Resultado neto de costos. Pasa el mouse para ver el motivo de salida |
+| Rectángulo **gris** con "sin trade: …" o "se opera ES" | Hoy no se opera en este mercado, y por qué |
+| **Panel** | Qué se opera hoy, puntajes de NQ y ES, niveles, estado, estadísticas del gráfico y referencia del backtest |
 
 ---
 
-## 6. Alertas al celular y cómo ejecutar
+## 7. Alertas y ejecución
 
-**Crear la alerta:**
-1. Instala la app de TradingView en el celular con la misma cuenta.
-2. En el gráfico, crea una alerta (ícono del reloj o `Alt + A`):
-   - **Condición:** `ORB5 rápido` → **"Cualquier llamada a la función alert()"**.
-   - **Notificaciones:** *Notificar en la app*.
-   - **Vencimiento:** el más largo que permita tu plan.
+**Crear la alerta** en los dos gráficos (ícono del reloj o `Alt + A`):
+- **Condición:** `ORB5 puntaje` → **"Cualquier llamada a la función alert()"**.
+- **Notificaciones:** *Notificar en la app*.
 
 **Mensajes que te llegarán:**
-- **9:35:** `COMPRA 2 MNQ a mercado ~24230 | STOP 24200 | TP 24530 | cerrar a las 10:35 NY`.
-- **Si toca el stop:** `STOP tocado: compra cerrada en ~24200 (−1.0R)`.
-- **10:35:** `SALIDA 10:35: cierra la compra a mercado ahora (~24290, +2.0R)`.
+- **9:35:** `COMPRA NQ (puntaje 86): 2 MNQ a mercado ~24190 | STOP 24155 | TP1 24260 (cerrar 1) | TP 24540 | cerrar a las 10:35 NY`.
+- **TP1:** `TP1 NQ: cierra 1 MNQ (~24260) y mueve el stop a la entrada 24190`.
+- **Al salir:** `STOP NQ: …`, `Stop en la entrada (tras el parcial)` o `SALIDA 10:35 NQ: cierra la compra a mercado ahora`.
 
-**Cómo ejecutar** (TopstepX u otra plataforma):
-1. **9:35:** abre una orden **a mercado** con los contratos indicados, **con bracket**: el stop y el take profit del mensaje. Así, si te desconectas, el stop sigue puesto.
-2. **Si llegas tarde** y el precio ya avanzó a tu favor más de un cuarto del riesgo (0,25R), o ya tocó el stop, **salta la señal**.
-3. **No cierres antes por miedo ni por euforia.** Las salidas son solo tres: stop, take profit o 10:35. Las ganancias grandes, que pagan todo, ocurren justamente cuando uno tiene ganas de cerrar.
-4. **10:35:** si la posición sigue abierta, ciérrala a mercado (*Flatten*).
-5. **Nunca muevas el stop más lejos.**
-6. **Una sola operación por día.**
-7. **Mismo riesgo siempre:** no subas después de ganar ni de perder.
+**Cómo ejecutar:**
+1. **9:35:** orden **a mercado** con los contratos indicados, con **bracket**: el stop y el TP final. En TopstepX, Tradovate o NinjaTrader puedes armar una estrategia ATM o un bracket con dos objetivos: 50 % en TP1 y 50 % en TP final, con breakeven automático al tocar TP1.
+2. **Si llegas tarde** y el precio ya avanzó más de 0,25R a tu favor, o ya tocó el stop, **salta la señal**.
+3. **Al tocar TP1:** cierra la mitad y **mueve el stop a la entrada**. Si la plataforma lo hace sola, mejor.
+4. **10:35:** cierra lo que quede (*Flatten*).
+5. **Nunca** muevas el stop más lejos, ni cierres antes por miedo o por euforia.
+6. **Una operación por día**, siempre con el mismo riesgo.
 
 ---
 
-## 7. Plan de validación (tu meta: 4-8 semanas en demo)
+## 8. Plan de validación y repetir el backtest
 
-**Lo que la demo SÍ valida:** que entiendes las señales, que ejecutas a tiempo y cuánto deslizamiento real tienes.
+**Demo desde mañana (4-8 semanas):**
+- Toma **todas** las señales con puntaje ≥ 40, sin elegir.
+- Anota fecha, mercado, puntaje, entrada esperada y real, salidas y errores.
+- Serán ~5-10 operaciones: sirven para practicar la ejecución, no para medir la ventaja. Eso ya lo miden los 7 años de la sección 3.
 
-**Lo que la demo NO valida:** si la estrategia gana. 8 semanas son ~12 señales, y con 24 % de acierto 12 operaciones pueden dar −10R o +15R por pura suerte. Para eso están los 7 años de la sección 2.
+**Repetir el backtest con tus datos:**
 
-1. **Semana 1:**
-   - Instala el indicador y revisa los días pasados del gráfico. Comprueba que entiendes por qué hubo o no hubo señal.
-   - Practica órdenes con bracket en la cuenta de simulación.
-2. **Semanas 2-8:**
-   - Toma **todas** las señales en demo, sin elegir.
-   - Anota cada una: fecha, dirección, entrada esperada y real, stop, salida, resultado en R y errores.
-   - Al final compara tu R medio con el del panel. Si es mucho peor, el problema está en la ejecución (llegar tarde, cerrar antes).
-
-**Repetir la prueba con tus propios datos** (opcional, para no depender de mí):
-
-```bash
-pip install databento pandas pyarrow
-# PowerShell: $env:DATABENTO_API_KEY = "db-..."   (tu clave queda solo en tu PC, no la pegues en el chat)
-python scripts/descargar_datos_databento.py --symbol NQ --start 2019-06-01 --estimate   # cuánto cuesta (crédito gratis $125)
-python scripts/descargar_datos_databento.py --symbol NQ --start 2019-06-01
-python -m futbot stats --recipe nq_orb5_rapida --symbol NQ --csv "data/real/NQ_1m_*.parquet"
-python -m futbot prop  --recipe nq_orb5_rapida --symbol MNQ --csv "data/real/NQ_1m_*.parquet" --firm topstep_50k --param risk_usd=150 --max-size 2
+```powershell
+# con tus archivos de OANDA (data/oanda, hora del servidor MT5):
+python scripts/backtest_puntaje.py --nq data/oanda/US100_M5.csv.gz --es data/oanda/US500_M5.csv.gz --tz mt5
+# con datos de CME de Databento (scripts/descargar_datos_databento.py, ver README):
+python scripts/backtest_puntaje.py --nq "data/real/NQ_1m_*.parquet" --es "data/real/ES_1m_*.parquet"
+# otro umbral u otro riesgo:
+python scripts/backtest_puntaje.py --nq data/oanda/US100_M5.csv.gz --es data/oanda/US500_M5.csv.gz --tz mt5 --puntaje 60 --riesgo 250
 ```
 
-`futbot` ajusta solo los cambios de contrato, con la columna `instrument_id` que guarda el script. En `prop`, el tamaño 1 equivale a $150 por operación y el 2 a $300, a los precios de cada año. Mis tablas de la sección 3 usan el precio de hoy, así que tus números van a variar un poco. No subas esos datos a un repositorio público, porque tienen licencia de CME.
+El script muestra los trades por semana, el acierto, el R medio, los resultados por año y por puntaje, y la probabilidad de aprobar en LucidFlex, Topstep, Tradeify y MFFU.
+
+> **Importante sobre tus archivos de OANDA:** MT5 guarda la **hora del servidor** (Nueva York + 7 horas), aunque el archivo diga UTC. Lo comprobé comparando US100 con el NQ real: coinciden con correlación 0,98-0,999 solo con ese desfase. Cárgalos siempre con `--tz mt5`. Con `--tz UTC`, todas las estrategias de la apertura se calculan 3 horas corridas.
 
 **Criterios para comprar la evaluación:**
-- [ ] En demo ejecutaste **todas** las señales sin errores graves, y tu deslizamiento medio es de 1-2 ticks.
-- [ ] Aceptas pasar meses en la evaluación, aguantar 15 o más pérdidas seguidas y varios meses en negativo sin cambiar las reglas.
-- [ ] Entiendes que la probabilidad estimada de aprobar es de ~50 %, no 100 %.
+- [ ] Ejecutaste en demo todas las señales sin errores graves, incluido el parcial con breakeven.
+- [ ] Aceptas ~1 trade por semana, semanas sin trades y rachas de 5-8 pérdidas.
+- [ ] Entiendes que la probabilidad estimada de aprobar es de ~55-60 % y que la de suspender es de ~15-20 %.
 
 ---
 
-## 8. Gestión de riesgo para Topstep 50K
+## 9. Gestión de riesgo
 
-- **Riesgo por operación: $150.** Con $2.000 de límite aguantas ~13 pérdidas seguidas. La peor racha de 2019-2026 fue de 18, así que el riesgo de quemar la cuenta existe (38 % en la simulación).
-- **Contratos:** MNQ = $150 ÷ (puntos hasta el stop × $2), redondeando hacia abajo.
-  - Si el stop está a más de 75 puntos, no cabe ni 1 MNQ: **no se opera**. En 2026 pasó en ~8 % de las señales.
-  - Si está a menos de 6 puntos, tampoco se opera: las comisiones se comerían la ganancia.
-- **Regla de consistencia (50 %):** si un día ganas mucho (más de $1.500, por ejemplo con un take profit de 10R), la evaluación exigirá ganar más en total. No es un error: sigue operando normal.
-- **Límite diario:** con una sola operación por día y $150 de riesgo, el límite diario no se activa.
-- **Al aprobar:** las reglas de retiro y consistencia cambian. Mantén $150 por operación hasta tener un colchón sobre el límite.
+- **$200 por operación.** Con $2.000 de límite caben ~10 pérdidas seguidas, y la peor racha histórica fue de 8. Con $250 aprueba más rápido, pero suspende más (22-32 %).
+- **Contratos:** MNQ = $200 ÷ (puntos hasta el stop × $2), redondeando hacia abajo; MES = $200 ÷ (puntos × $5).
+  - Si el stop está a más de 100 puntos en NQ (40 en ES), no cabe ni 1 contrato y no se opera.
+- **Consistencia del 50 % en la evaluación:** si un día ganas mucho, por ejemplo con un 10R, tendrás que ganar más en total para aprobar. Sigue operando normal.
+- **Una vez financiado:** mantén $200 hasta tener un colchón de al menos $1.000 sobre el límite.
 
 ---
 
-## 9. Qué se probó y qué no funcionó
+## 10. Qué se probó y qué no funcionó
+
+Para llegar a 3 trades por semana y a acierto alto probé, en NQ real 2019-2026, NQ/ES CFD 2005-2020 y tus datos de OANDA 2025-26:
 
 | Idea | Resultado |
 |---|---|
-| Versión anterior: ORB 5 min + gap, stop en el extremo de la vela, hasta las 11:30 | +0,08R/operación en MNQ real 2019-2026; −0,15R en 2026. **Reemplazada** |
-| Solo compras + stop en la mitad + salida 10:05 (elegida con CFD y una muestra chica de 2026) | **Falló** en 2021-2025: −0,07R/operación, 1 de 5 años positivo |
-| Objetivos de 1R a 3R (más acierto) | Pierden o quedan en cero: la ventaja vive en las pocas operaciones que corren mucho |
-| Ir contra la primera vela (fade), comprar el retroceso al 50 %, esperar el cierre fuera del rango de 15-30 min | Pierden después de costos |
-| Sin el filtro de gap | Pierde en todos los períodos y con cualquier hora de salida |
-| Modelo de "probabilidad de ganar" con 12 condiciones (CFD 2005-2020) | Fuera de muestra no separó nada (AUC 0,53; 0,50 = azar) |
+| Objetivo de 1R a 2R para toda señal (acierto 40-50 %) | Ganancia ~0 o negativa: la ventaja vive en las operaciones que corren |
+| Tomar la mitad en +0,5R o +1R | Acierto 50-60 %, pero ganancia ~0 |
+| Ir contra la ruptura del rango de 5, 15 o 30 minutos (acierto 55-66 %) | ~0 o negativo después de comisiones |
+| Operar días sin gap (aunque tengan puntaje alto) | Negativo en 2023-2026 y en 2025-26 |
+| Ruptura del rango overnight después de las 9:35 | Negativo en NQ 2023-2026 y en ES |
+| Volumen relativo, tendencia de 20 días, solo compras | No mejoran de forma consistente |
+| Riesgo según el puntaje ($300 en 60+, $150 en 40-59) | No mejora la probabilidad de aprobar |
+| Elegir entre NQ y ES por el mejor puntaje | Peor que NQ primero: con el mismo puntaje, NQ rindió más (2005-2020) |
 
-**Lo que dice la investigación publicada:**
-- Dos estudios de 2026 encuentran que las señales intradía de los futuros de índices **no sobreviven a los costos** en promedio: Fetna (225 pruebas pre-registradas en 9 futuros) y Mesfin (MNQ 2021-2025).
-- El registro de investigación del repositorio de donde salieron los datos llega a lo mismo con SPY/QQQ.
-- Nuestra ventaja es modesta y concentrada (días en juego, 1 hora, stop ajustado). **Puede desaparecer.** Por eso:
-  - el panel muestra los resultados reales en tu gráfico;
-  - conviene repetir la prueba cada 6 meses con datos nuevos (`futbot stats`). Si 12 meses seguidos salen negativos, para y revisa.
+**Lo que sí funcionó:** filtrar con un puntaje armado con condiciones que tienen lógica de mercado. Cada condición mejoró el resultado tanto en los datos usados para elegirla como en los guardados para comprobarla.
 
-**Ideas que quedan en fila** (cada una se prueba igual: elegir con un período, comprobar con otro):
-1. Ajustar el tamaño según el ATR del día.
-2. Una segunda estrategia que no dependa de la apertura, para diversificar.
-3. Revisar el umbral del gap (0,2 a 0,5 funcionó) sin sobreajustar.
+**Limitaciones honestas:**
+- El puntaje y las salidas se eligieron mirando 2019-2026; la confirmación más limpia es la historia 2005-2020 y el hecho de que los 8 años den positivo.
+- No conseguí futuros reales de ES de 2021 a 2024: para ES usé CFD de 2005-2020 y tus datos de OANDA 2025-26.
+- 2026 viene flojo en NQ (+0,01R hasta septiembre). Una ventaja de +0,3R por operación puede desaparecer: repite `scripts/backtest_puntaje.py` cada 3-6 meses con datos nuevos.
 
 ---
 
-## 10. Glosario
+## 11. Glosario
 
 | Término | Qué significa |
 |---|---|
-| **R** | Lo que arriesgas en una operación (puntos hasta el stop × valor por punto × contratos). "+2R" = ganaste el doble de lo arriesgado |
-| **Stop loss** | Orden que cierra la operación con pérdida si el precio llega a cierto nivel |
-| **Take profit (TP)** | Orden que cierra con ganancia en un nivel fijado |
-| **Bracket / OCO** | Stop y take profit puestos juntos: cuando se ejecuta uno, se cancela el otro |
+| **R** | Lo que arriesgas en una operación. "+2R" = ganaste el doble de lo arriesgado |
+| **Puntaje** | Calidad de la señal de 0 a 100, según cuántas condiciones a favor cumple |
+| **Parcial / TP1** | Cerrar una parte de los contratos en un primer objetivo (+2R) |
+| **Breakeven** | Mover el stop al precio de entrada: lo que queda ya no puede perder (salvo comisiones) |
+| **Rango overnight** | Máximo y mínimo entre las 18:00 de ayer y las 9:29 de hoy |
 | **ORB** | *Opening Range Breakout*: operar en la dirección del primer rango de la apertura |
 | **Gap** | Diferencia entre la apertura de hoy (9:30) y el cierre de ayer (16:00) |
-| **ATR** | *Average True Range*: cuánto se mueve el mercado en un día normal (promedio de 14 días) |
-| **Roll / cambio de contrato** | Cada 3 meses el futuro "vigente" pasa al siguiente vencimiento, que cotiza a otro precio; sin ajustar, eso crea un gap falso |
-| **Slippage / deslizamiento** | Diferencia entre el precio que querías y el que te dieron |
-| **Acierto (win rate)** | % de operaciones ganadoras |
-| **Expectativa** | Ganancia media por operación (en R o en $) |
-| **Drawdown / caída** | Pérdida desde el máximo de la cuenta |
-| **MLL** | *Maximum Loss Limit* de Topstep: si el saldo toca ese nivel, pierdes la cuenta |
-| **Trailing al cierre (EOD)** | El límite sube con tu mejor saldo de cierre diario (hasta el saldo inicial) |
-| **Dentro / fuera de muestra** | Datos usados para elegir la regla / datos guardados para comprobarla sin trampas |
-| **t (estadístico t)** | Qué tan lejos de cero está la ganancia media comparada con el ruido; más de 2 es evidencia razonable |
-| **NQ / MNQ** | Futuro del Nasdaq-100 mini ($20 por punto) / micro ($2 por punto) |
+| **ATR** | Cuánto se mueve el mercado en un día normal (promedio de 14 días) |
+| **Roll** | Cambio al siguiente vencimiento del futuro (cada 3 meses); el indicador lo ajusta solo |
+| **Bracket / ATM** | Stop y objetivos puestos junto con la entrada |
+| **MLL / límite de pérdida** | Si el saldo toca ese nivel, pierdes la cuenta de fondeo |
+| **Trailing al cierre (EOD)** | El límite sube con tu mejor saldo de cierre diario |
+| **Dentro / fuera de muestra** | Datos usados para diseñar la regla / datos guardados para comprobarla |
+| **NQ / MNQ, ES / MES** | Futuros del Nasdaq-100 y del S&P 500: mini ($20 y $50 por punto) y micro ($2 y $5) |
+
+**Fuentes de datos:**
+- NQ real: velas de 1 minuto de MNQ de Databento, publicadas en [vinentHuynh/QuantResearch](https://github.com/vinentHuynh/QuantResearch).
+- CFD 2005-2020: [FutureSharks/financial-data](https://github.com/FutureSharks/financial-data).
+- 2025-26: tus datos de OANDA MT5 (`data/oanda`).
