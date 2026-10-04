@@ -238,6 +238,7 @@ class Engine:
     # ---- bucle principal ----------------------------------------------------------------------
     def run(self) -> "BacktestResult":
         w0, w1 = self.strategy.window()
+        self.strategy.prepare(self.data)
         ctx = self.ctx
         for sdate, idx, O, H, L, C, V, S in iter_sessions(self.data, w0, w1, self.start, self.end):
             self.O, self.H, self.L, self.C, self.n = O, H, L, C, len(O)

@@ -17,6 +17,10 @@
 3. **"Pasar fondeos fácilmente" no existe.** Una estrategia sin ventaja (Sharpe 0) aprueba un 23-26 % de las evaluaciones *por pura suerte*; para aprobar 65-75 % de las veces necesitas Sharpe ≥ 2 **y** un tamaño prudente. En la industria aprueba un 5-15 % de quienes compran evaluaciones y cobra alguna vez ~7 %.
 4. Las mejores candidatas para tu nuevo bot: **(1) Noise Area en NQ** y **(2) ORB de 5 minutos en NQ**, seguidas de **CL primera media hora** y **ruptura del rango asiático en oro** como diversificadoras. Antes de arriesgar dinero hay que **re-validarlas con datos reales de CME 2019-2026** (ver sección 5): el kit ya está preparado para eso.
 
+> **Actualización:** la estrategia elegida para el bot de TradingView es el ORB de 5 minutos en NQ con filtro de
+> "día en juego" (gap ≥ 0,30 ATR) y salida a las 11:30. Reglas, números y guía de uso en
+> [ESTRATEGIA_TRADINGVIEW.md](ESTRATEGIA_TRADINGVIEW.md); el indicador está en [`pine/orb5_nq_senales.pine`](../pine/orb5_nq_senales.pine).
+
 ---
 
 ## 1. Cómo evaluar una estrategia (y por qué el win rate solo engaña)

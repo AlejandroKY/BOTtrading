@@ -3,6 +3,10 @@
 Investigación y kit en Python para construir un bot de futuros (ES, NQ, GC, CL, ZN, 6E) pensado
 para las reglas de las prop firms (Topstep, Apex, Tradeify, MyFundedFutures, Lucid...).
 
+- 📈 **[pine/orb5_nq_senales.pine](pine/orb5_nq_senales.pine)**: el bot de señales para **TradingView** (NQ/MNQ,
+  9:30-11:30 NY): compra/venta, stop, take profit, contratos para tu riesgo, panel y alertas al celular.
+  Guía completa (qué esperar, instalación, alertas, ejecución y plan de validación):
+  **[docs/ESTRATEGIA_TRADINGVIEW.md](docs/ESTRATEGIA_TRADINGVIEW.md)**.
 - 📄 **[docs/INVESTIGACION_ESTRATEGIAS.md](docs/INVESTIGACION_ESTRATEGIAS.md)**: las 7 estrategias (reglas exactas,
   evidencia publicada y fuentes), reglas de prop firms 2026, si permiten bots, repositorios recomendados y hoja de ruta.
 - 📊 **[docs/RESULTADOS_BACKTEST.md](docs/RESULTADOS_BACKTEST.md)**: backtest independiente de todas las estrategias
@@ -75,11 +79,14 @@ python -m futbot backtest --strategy range_breakout --symbol MCL \
 # ¿Con cuántos contratos y qué probabilidad tengo de aprobar una evaluación?
 python -m futbot prop --recipe nq_orb5 --firm topstep_50k --firm tradeify_growth_50k --max-size 15
 
-# Regenerar docs/RESULTADOS_BACKTEST.md con todas las recetas (~6 min)
+# Números de referencia del indicador de TradingView (acierto y R medio, netos y brutos, por año)
+python -m futbot stats --recipe nq_orb5_gap --symbol NQ
+
+# Regenerar docs/RESULTADOS_BACKTEST.md con todas las recetas (~7 min)
 python -m futbot report
 ```
 
-Recetas incluidas (`python -m futbot list`): `nq_orb5`, `nq_orb5_atr`, `es_orb5`, `es_noise_area`, `nq_noise_area`,
+Recetas incluidas (`python -m futbot list`): `nq_orb5`, `nq_orb5_gap` (la del indicador de TradingView), `nq_orb5_atr`, `es_orb5`, `es_noise_area`, `nq_noise_area`,
 `es_last30`, `nq_last30`, `zn_last30`, `gc_last30`, `cl_last30`, `6e_last30`, `cl_orb15`, `gc_london`, `6e_london`,
 `es_orb30`, `nq_orb30`, `es_gap_fill`, `nq_gap_fill`, `gc_day_short`.
 
@@ -98,6 +105,7 @@ futbot/
 ├── report.py         # genera docs/RESULTADOS_BACKTEST.md
 └── cli.py            # python -m futbot ...
 tests/                # tests del motor, estrategias y simulador
+pine/                 # indicador de TradingView (mismas reglas que la receta nq_orb5_gap)
 ```
 
 ## Escribir una estrategia nueva

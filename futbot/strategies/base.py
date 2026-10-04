@@ -39,6 +39,10 @@ class Strategy:
     def setup(self) -> None:
         """Pre-cálculos a partir de self.p (se llama en __init__)."""
 
+    def prepare(self, data) -> None:
+        """Pre-cálculos con TODOS los datos (p.ej. barras diarias); el motor lo llama antes del bucle.
+        Sólo se debe usar información de días ya cerrados para no mirar el futuro."""
+
     def on_session_start(self, ctx) -> None:
         pass
 

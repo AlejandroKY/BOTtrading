@@ -1,6 +1,6 @@
 # Resultados de backtest (generado automáticamente)
 
-> Generado con `python -m futbot report` el 2026-10-03. Datos: CFDs de Oanda de 1 minuto (2005-01-02 → 2020-05-14) del repositorio público [FutureSharks/financial-data](https://github.com/FutureSharks/financial-data), usados como aproximación de los futuros equivalentes (SPX500→ES, NAS100→NQ, XAU→GC, WTICO→CL, USB10Y→ZN, EUR/USD→6E). **No es dato de CME**: sirve para filtrar ideas, no para decidir con dinero real.
+> Generado con `python -m futbot report` el 2026-10-04. Datos: CFDs de Oanda de 1 minuto (2005-01-02 → 2020-05-14) del repositorio público [FutureSharks/financial-data](https://github.com/FutureSharks/financial-data), usados como aproximación de los futuros equivalentes (SPX500→ES, NAS100→NQ, XAU→GC, WTICO→CL, USB10Y→ZN, EUR/USD→6E). **No es dato de CME**: sirve para filtrar ideas, no para decidir con dinero real.
 
 **Costes simulados**: comisión ida+vuelta de $4,50 por mini y $1,40 por micro; órdenes market con 0,5 tick de slippage y stops con 1 tick, más redondeo del precio al tick en contra (con precios medios equivale a cruzar el spread); los targets (limit) exigen 1 tick de penetración y, si en la misma barra se tocan stop y target, cuenta el stop. Todo intradía: sin posiciones overnight.
 
@@ -17,6 +17,7 @@ Sharpe calculado con el P&L diario (días sin trades = 0). *Sharpe 2015+* = sól
 | Receta | Estrategia | Contrato | Trades | Win rate | Profit factor | Payoff | Trade medio $ | Neto $/año | Max DD $ | Peor día $ | Sharpe | Sharpe 2015+ | Sharpe bruto |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `nq_orb5` | NQ · ORB 5 min (10R o cierre) | NQ | 3823 | 20.7% | 1.08 | 4.12 | 9 | 2,287 | 22,156 | -2,624 | 0.30 | 0.58 | 0.69 |
+| `nq_orb5_gap` | NQ · ORB 5 min + filtro de gap, hasta 11:30 | NQ | 1310 | 31.2% | 1.17 | 2.57 | 19 | 1,637 | 7,201 | -2,530 | 0.43 | 0.28 | 0.70 |
 | `nq_orb5_atr` | NQ · ORB 5 min, stop 10% ATR, salida al cierre | NQ | 3810 | 16.5% | 1.10 | 5.58 | 10 | 2,487 | 16,586 | -2,624 | 0.36 | 0.51 | 0.78 |
 | `es_orb5` | ES · ORB 5 min (10R o cierre) | ES | 3628 | 18.5% | 0.94 | 4.13 | -8 | -1,814 | 35,646 | -2,192 | -0.28 | -0.14 | 0.58 |
 | `es_noise_area` | ES · Noise Area (momentum intradía) | ES | 3554 | 31.5% | 1.00 | 2.18 | 0 | 107 | 33,499 | -3,196 | 0.02 | 0.16 | 0.75 |
@@ -43,6 +44,7 @@ Las comisiones de los micros pesan ~3 veces más por punto que las de los minis 
 | Receta | Contrato | Win rate | Profit factor | Trade medio $ | Neto $/año | Max DD $ | Sharpe | Sharpe 2015+ |
 |---|---|---|---|---|---|---|---|---|
 | `nq_orb5` | MNQ | 20.6% | 1.00 | -0 | -8 | 3,928 | -0.01 | 0.37 |
+| `nq_orb5_gap` | MNQ | 30.9% | 1.08 | 1 | 83 | 829 | 0.22 | 0.13 |
 | `nq_orb5_atr` | MNQ | 16.4% | 1.00 | 0 | 13 | 2,377 | 0.02 | 0.28 |
 | `es_orb5` | MES | 18.4% | 0.87 | -2 | -406 | 6,901 | -0.62 | -0.40 |
 | `es_noise_area` | MES | 30.1% | 0.93 | -1 | -209 | 5,180 | -0.33 | -0.09 |
@@ -68,6 +70,7 @@ Se simula una evaluación empezando en cada día del histórico (método *histor
 | Receta | topstep_50k | apex_50k_eod | tradeify_growth_50k |
 |---|---|---|---|
 | `nq_orb5` | 24.6% / 64.1% (5×MNQ, 81 ses.) | 23.2% / 67.5% (3×NQ, 5 ses.) | 25.4% / 63.4% (5×MNQ, 70 ses.) |
+| `nq_orb5_gap` | 34.8% / 64.5% (2×NQ, 83 ses.) | 12.9% / 24.1% (3×NQ, 10 ses.) | 39.4% / 60.6% (2×NQ, 66 ses.) |
 | `nq_orb5_atr` | 24.7% / 72.4% (1×NQ, 57 ses.) | 22.7% / 59.2% (3×NQ, 6 ses.) | 28.8% / 68.5% (1×NQ, 43 ses.) |
 | `es_orb5` | 17.4% / 82.6% (1×ES, 42 ses.) | 20.2% / 74.6% (3×ES, 5 ses.) | 22.0% / 78.0% (1×ES, 37 ses.) |
 | `es_noise_area` | 19.0% / 69.8% (4×MES, 109 ses.) | 21.3% / 67.5% (3×ES, 7 ses.) | 22.4% / 77.6% (3×ES, 7 ses.) |
@@ -122,6 +125,29 @@ Estrategias sintéticas con P&L diario normal bajo las reglas de Topstep 50K, co
 | 2018 | 26,173 | 256 | 25.0% | 1.40 | 11,261 |
 | 2019 | 6,704 | 258 | 23.3% | 1.12 | 6,376 |
 | 2020 | 5,115 | 90 | 24.4% | 1.10 | 22,156 |
+
+</details>
+
+<details><summary><code>nq_orb5_gap</code> — NQ · ORB 5 min + filtro de gap, hasta 11:30 (NQ)</summary>
+
+| Año | Neto $ | Trades | Win rate | Profit factor | Max DD $ |
+|---|---|---|---|---|---|
+| 2005 | -1,504 | 41 | 14.6% | 0.34 | 1,620 |
+| 2006 | -1,532 | 56 | 19.6% | 0.52 | 1,785 |
+| 2007 | -202 | 87 | 26.4% | 0.96 | 1,842 |
+| 2008 | 5,960 | 70 | 34.3% | 2.03 | 968 |
+| 2009 | 4,254 | 78 | 43.6% | 2.04 | 662 |
+| 2010 | 2,016 | 91 | 31.9% | 1.35 | 1,405 |
+| 2011 | 3,048 | 96 | 35.4% | 1.41 | 1,797 |
+| 2012 | -1,400 | 90 | 22.2% | 0.81 | 2,259 |
+| 2013 | 2,534 | 97 | 41.2% | 1.47 | 750 |
+| 2014 | 3,064 | 88 | 31.8% | 1.39 | 1,586 |
+| 2015 | -4,406 | 87 | 24.1% | 0.64 | 7,196 |
+| 2016 | 992 | 84 | 28.6% | 1.10 | 3,112 |
+| 2017 | 3,324 | 98 | 34.7% | 1.32 | 1,615 |
+| 2018 | -127 | 96 | 31.2% | 0.99 | 4,640 |
+| 2019 | 5,786 | 102 | 35.3% | 1.31 | 2,750 |
+| 2020 | 3,340 | 49 | 30.6% | 1.16 | 5,706 |
 
 </details>
 

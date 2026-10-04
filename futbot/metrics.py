@@ -108,3 +108,20 @@ def format_summary(s: dict) -> str:
         f"Pérdidas consecutivas máx.: {s['max_consec_losses']}  |  Días con trades: {s['trading_days']}/{s['days']}",
     ]
     return "\n".join(lines)
+
+
+def r_multiples(trades: pd.DataFrame, point_value: float) -> pd.Series:
+    """Resultado de cada trade en R (múltiplos del riesgo inicial), por contrato y neto de costos."""
+    risk = (trades["entry"] - trades["stop"]).abs() * point_value * trades["qty"]
+    return trades["pnl"] / risk
+
+
+def r_summary(r: pd.Series) -> dict:
+    r = r.dropna()
+    if r.empty:
+        return dict(trades=0, win_rate=np.nan, avg_win_r=np.nan, avg_loss_r=np.nan, exp_r=np.nan, pf_r=np.nan)
+    w = r > 0
+    losses = -r[~w].sum()
+    return dict(trades=len(r), win_rate=w.mean(), avg_win_r=r[w].mean() if w.any() else np.nan,
+                avg_loss_r=r[~w].mean() if (~w).any() else np.nan, exp_r=r.mean(),
+                pf_r=(r[w].sum() / losses) if losses > 0 else math.inf)

@@ -6,6 +6,7 @@ Ejemplos:
   python -m futbot backtest --strategy range_breakout --symbol MCL --csv data/raw/CL_1m.csv --tz UTC \\
          --param range_start=09:00 --param range_end=09:15 --param window_start=09:00 --param window_end=14:30
   python -m futbot prop --recipe es_gap_fill --firm topstep_50k
+  python -m futbot stats --recipe nq_orb5_gap --symbol NQ      # números de referencia para el Pine Script
   python -m futbot report --out docs/RESULTADOS_BACKTEST.md
 """
 
@@ -21,7 +22,7 @@ import pandas as pd
 from .contracts import get_contract
 from .data import load_csv, load_futuresharks
 from .engine import run_backtest
-from .metrics import format_summary
+from .metrics import format_summary, r_multiples, r_summary
 from .propfirm import PROP_FIRMS, best_size, scan_sizes
 from .recipes import RECIPES
 from .strategies import STRATEGIES, make_strategy
@@ -106,6 +107,52 @@ def cmd_prop(args) -> None:
                   f"suspende {row.fail_rate:.1%}, mediana {row.median_days_pass:.0f} sesiones hasta aprobar")
 
 
+def cmd_stats(args) -> None:
+    """Estadísticas en R (lo que muestra el Pine Script), netas y brutas, por dirección y por año."""
+    strat_name, symbol, params = _build(args)
+    data = _load(args, symbol)
+    c = get_contract(symbol).with_costs(args.commission)
+    runs = {
+        "neto": run_backtest(data, c, make_strategy(strat_name, **params), slippage_ticks=args.slippage,
+                             stop_slippage_ticks=args.stop_slippage, start=args.start, end=args.end),
+        "bruto": run_backtest(data, c.with_costs(0.0), make_strategy(strat_name, **params), slippage_ticks=0,
+                              stop_slippage_ticks=0, start=args.start, end=args.end),
+    }
+    t = runs["neto"].trades
+    if t.empty or t["stop"].isna().all():
+        sys.exit("Sin trades con stop: no hay R que medir.")
+    years = max(daily_years(runs["neto"].daily), 1e-9)
+    rows = []
+    for kind, res in runs.items():
+        tr = res.trades
+        r = r_multiples(tr, c.point_value)
+        for lab, mask in (("ambas", tr["side"] != 0), ("compras", tr["side"] > 0), ("ventas", tr["side"] < 0)):
+            rows.append({"costos": kind, "dirección": lab, **r_summary(r[mask])})
+    table = pd.DataFrame(rows)
+    print(f"{strat_name} en {symbol}: {len(t)} trades en {years:.1f} años ({len(t) / years:.0f} por año)")
+    print(table.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+    r_net = r_multiples(t, c.point_value)
+    by_year = pd.DataFrame({"año": pd.to_datetime(t["entry_time"]).dt.year, "r": r_net})
+    print("\nPor año (neto):")
+    print(by_year.groupby("año")["r"].agg(trades="size", acierto=lambda x: (x > 0).mean(), r_medio="mean")
+          .to_string(float_format=lambda x: f"{x:.3f}"))
+    risk_pts = (t["entry"] - t["stop"]).abs()
+    cost_pts = c.commission_rt / c.point_value + (args.slippage + args.stop_slippage) * c.tick_size
+    gross = r_summary(r_multiples(runs["bruto"].trades, c.point_value))
+    print(f"\nRiesgo mediano por trade: {risk_pts.median():.2f} puntos; costo ≈ {cost_pts:.2f} puntos "
+          f"= {cost_pts / risk_pts.median():.3f} R por trade con ese riesgo.")
+    print(f"Para el Pine Script -> 'Acierto histórico (%)' = {100 * gross['win_rate']:.0f} y "
+          f"'Ganancia media por operación (R, neta)' = R bruto {gross['exp_r']:+.3f} menos el costo en R "
+          f"con el riesgo típico de HOY (costo en puntos / riesgo actual en puntos).")
+
+
+def daily_years(daily: pd.DataFrame) -> float:
+    if daily.empty:
+        return 0.0
+    first, last = pd.Timestamp(daily.index[0]), pd.Timestamp(daily.index[-1])
+    return (last - first).days / 365.25
+
+
 def cmd_report(args) -> None:
     from .report import build_report
 
@@ -147,6 +194,10 @@ def main(argv=None) -> None:
     p.add_argument("--min-size", type=int, default=1)
     p.add_argument("--max-size", type=int, default=20)
     p.set_defaults(fn=cmd_prop)
+
+    st = sub.add_parser("stats", help="estadísticas en R (para el Pine Script), netas y brutas")
+    common(st)
+    st.set_defaults(fn=cmd_stats)
 
     r = sub.add_parser("report", help="corre todas las recetas y escribe un informe Markdown")
     r.add_argument("--out", default="docs/RESULTADOS_BACKTEST.md")

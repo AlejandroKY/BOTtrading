@@ -20,6 +20,13 @@ class ORBZarattini(Strategy):
     Variante del 2º paper (Zarattini, Barbon & Aziz 2024, "A Profitable Day Trading Strategy For
     The U.S. Equity Market"): stop a `stop_atr` x ATR(14) diario (0,10 en el paper) y salida al
     cierre (target_r=None).
+
+    Filtro "día en juego" (`min_gap_atr`): sólo opera si |apertura 09:30 - cierre 16:00 de ayer|
+    >= min_gap_atr x ATR(14) de Wilder de la sesión Globex anterior (el ta.atr(14) diario de
+    TradingView). En NQ 2005-2020 los gaps grandes concentraron la ventaja (ver docs).
+
+    Tamaño por riesgo (`risk_usd`): contratos = floor(risk_usd / (distancia al stop x $/punto)),
+    con tope `max_qty`; si no cabe ni 1 contrato, no opera.
     """
 
     name = "orb_zarattini"
@@ -27,11 +34,20 @@ class ORBZarattini(Strategy):
     default_params = dict(
         window_start="09:30", window_end="16:00", or_minutes=5, target_r=10.0,
         stop_atr=None, atr_len=14, direction="both", min_range_ticks=4, qty=1,
+        min_gap_atr=0.0, risk_usd=None, max_qty=50,
     )
 
     def setup(self):
         self.t0 = sm(self.p["window_start"])
         self.t_or = self.t0 + self.p["or_minutes"]
+        self.daily = None
+
+    def prepare(self, data):
+        if self.p["min_gap_atr"]:
+            from ..data import daily_bars
+
+            d = daily_bars(data, self.p["atr_len"], rth_start=self.p["window_start"])
+            self.daily = {k: (a, c) for k, a, c in zip(d.index, d["atr_prev"], d["prev_rth_close"])}
 
     def on_session_start(self, ctx):
         self.hi, self.lo, self.first_open, self.done = -math.inf, math.inf, None, False
@@ -40,6 +56,11 @@ class ORBZarattini(Strategy):
         self.atr = atr_from_history(ctx.history, self.p["atr_len"], true_range=True)
         if self.p["stop_atr"] and self.atr is None:
             self.done = True
+        if self.p["min_gap_atr"] and not self.done:
+            atr_prev, prev_close = (self.daily or {}).get(ctx.date, (math.nan, math.nan))
+            gap_atr = abs(ctx.O[0] - prev_close) / atr_prev
+            if not gap_atr >= self.p["min_gap_atr"]:  # también descarta NaN (sin historia)
+                self.done = True
 
     def on_bar(self, ctx):
         if self.done:
@@ -63,10 +84,19 @@ class ORBZarattini(Strategy):
                 offset = p["stop_atr"] * self.atr
             else:
                 long_stop, short_stop, offset = self.lo, self.hi, None
-            if close > self.first_open and d in ("both", "long"):
-                ctx.buy(p["qty"], stop=long_stop, stop_offset=offset, target_r=p["target_r"], tag="orb_long")
-            elif close < self.first_open and d in ("both", "short"):
-                ctx.sell(p["qty"], stop=short_stop, stop_offset=offset, target_r=p["target_r"], tag="orb_short")
+            side = 1 if close > self.first_open else -1 if close < self.first_open else 0
+            if side == 0 or (side > 0 and d == "short") or (side < 0 and d == "long"):
+                return
+            qty = p["qty"]
+            if p["risk_usd"]:
+                risk_pts = offset if offset else abs(close - (long_stop if side > 0 else short_stop))
+                qty = min(p["max_qty"], int(p["risk_usd"] // (risk_pts * ctx.contract.point_value)))
+                if qty < 1:
+                    return
+            if side > 0:
+                ctx.buy(qty, stop=long_stop, stop_offset=offset, target_r=p["target_r"], tag="orb_long")
+            else:
+                ctx.sell(qty, stop=short_stop, stop_offset=offset, target_r=p["target_r"], tag="orb_short")
 
 
 class RangeBreakout(Strategy):

@@ -16,6 +16,7 @@ import glob
 import os
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 ET = "America/New_York"
@@ -165,3 +166,48 @@ def resample(df: pd.DataFrame, minutes: int) -> pd.DataFrame:
     rule = f"{minutes}min"
     agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
     return df.resample(rule, label="left", closed="left").agg(agg).dropna(subset=["open"])
+
+
+def rma(values: pd.Series, n: int) -> pd.Series:
+    """Media de Wilder (RMA), idéntica a ta.rma de TradingView: arranca con la media simple de
+    los primeros n valores y luego rma = (rma_anterior * (n - 1) + valor) / n."""
+    x = values.to_numpy(dtype=float)
+    out = np.full(len(x), np.nan)
+    if len(x) >= n:
+        out[n - 1] = x[:n].mean()
+        for i in range(n, len(x)):
+            out[i] = (out[i - 1] * (n - 1) + x[i]) / n
+    return pd.Series(out, index=values.index)
+
+
+def daily_bars(df: pd.DataFrame, atr_len: int = 14, rth_start: str = "09:30",
+               rth_end: str = "16:00") -> pd.DataFrame:
+    """Barras diarias de la sesión Globex (18:00-17:00 ET), como las velas diarias de NQ1! en
+    TradingView, más la apertura/cierre del horario cash (RTH) y el ATR de Wilder.
+
+    Columnas: open, high, low, close (Globex), atr (incluye el día), atr_prev (del día anterior
+    completo: lo único que se conoce a las 09:30), rth_open, rth_close, prev_rth_close y
+    gap_atr = |rth_open - prev_rth_close| / atr_prev. Índice: fecha de sesión (datetime.date).
+    """
+    local = df.index.tz_convert(ET).tz_localize(None)
+    sdate = (local + pd.Timedelta(hours=6)).normalize()
+    keep = np.asarray(sdate.dayofweek < 5)
+    g = df[keep].groupby(sdate[keep])
+    d = pd.DataFrame({"open": g["open"].first(), "high": g["high"].max(),
+                      "low": g["low"].min(), "close": g["close"].last()})
+    prev_close = d["close"].shift(1)
+    tr = np.maximum(d["high"], prev_close) - np.minimum(d["low"], prev_close)
+    tr = tr.fillna(d["high"] - d["low"])
+    d["atr"] = rma(tr, atr_len)
+    d["atr_prev"] = d["atr"].shift(1)
+    mod = local.hour * 60 + local.minute
+    h0, m0 = map(int, rth_start.split(":"))
+    h1, m1 = map(int, rth_end.split(":"))
+    in_rth = np.asarray((mod >= h0 * 60 + m0) & (mod < h1 * 60 + m1)) & keep
+    gr = df[in_rth].groupby(local[in_rth].normalize())
+    rth = pd.DataFrame({"rth_open": gr["open"].first(), "rth_close": gr["close"].last()})
+    d = d.join(rth, how="left")
+    d["prev_rth_close"] = d["rth_close"].shift(1).ffill()  # último cierre cash disponible (como el Pine)
+    d["gap_atr"] = (d["rth_open"] - d["prev_rth_close"]).abs() / d["atr_prev"]
+    d.index = pd.DatetimeIndex(d.index).date
+    return d
