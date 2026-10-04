@@ -11,7 +11,10 @@ Uso (en tu PC):
     python scripts/descargar_datos_databento.py --symbol NQ --start 2024-01-01
 
 Después:
-    python -m futbot stats --recipe nq_orb5_gap --symbol NQ --csv "data/real/NQ_1m_*.parquet"
+    python -m futbot stats --recipe nq_orb5_rapida --symbol NQ --csv "data/real/NQ_1m_*.parquet"
+
+El continuo NQ.v.0 no está ajustado: futbot usa la columna instrument_id para quitar el salto de
+cada cambio de contrato (si no, aparecen gaps falsos 4 veces al año).
 
 No pegues tu API key en el código ni en el chat: déjala sólo en la variable de entorno.
 Los datos de CME tienen licencia: guárdalos en un repositorio PRIVADO (o no los subas).
@@ -58,14 +61,15 @@ def main() -> None:
 
     df = client.timeseries.get_range(**params).to_df()
     df = df.reset_index().rename(columns={"ts_event": "time"})
-    df = df[["time", "open", "high", "low", "close", "volume"]].sort_values("time")
+    # instrument_id marca cada contrato: futbot lo usa para ajustar los rolls (data.back_adjust)
+    df = df[["time", "open", "high", "low", "close", "volume", "instrument_id"]].sort_values("time")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for year, g in df.groupby(df["time"].dt.year):
         path = out / f"{args.symbol}_1m_{year}.parquet"
         g.to_parquet(path, index=False)
         print(f"  {path}: {len(g):,} velas")
-    print("Listo. Pruébalo con: python -m futbot stats --recipe nq_orb5_gap --symbol NQ "
+    print("Listo. Pruébalo con: python -m futbot stats --recipe nq_orb5_rapida --symbol NQ "
           f'--csv "{out.as_posix()}/{args.symbol}_1m_*.parquet"')
 
 

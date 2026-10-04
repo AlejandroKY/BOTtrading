@@ -141,9 +141,9 @@ def cmd_stats(args) -> None:
     gross = r_summary(r_multiples(runs["bruto"].trades, c.point_value))
     print(f"\nRiesgo mediano por trade: {risk_pts.median():.2f} puntos; costo ≈ {cost_pts:.2f} puntos "
           f"= {cost_pts / risk_pts.median():.3f} R por trade con ese riesgo.")
-    print(f"Para el Pine Script -> 'Acierto histórico (%)' = {100 * gross['win_rate']:.0f} y "
-          f"'Ganancia media por operación (R, neta)' = R bruto {gross['exp_r']:+.3f} menos el costo en R "
-          f"con el riesgo típico de HOY (costo en puntos / riesgo actual en puntos).")
+    net = r_summary(r_net)
+    print(f"Compáralo con el panel del Pine ('En este gráfico' / 'Backtest 2019-26'): acierto "
+          f"{100 * net['win_rate']:.0f} %, R medio neto {net['exp_r']:+.2f} (bruto {gross['exp_r']:+.2f}).")
 
 
 def daily_years(daily: pd.DataFrame) -> float:

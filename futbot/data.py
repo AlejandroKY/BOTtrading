@@ -99,7 +99,7 @@ def load_csv(path: str | Path, tz: str = "UTC", fmt: str = "auto", use_cache: bo
     """
     files = sorted(glob.glob(str(path))) or [str(path)]
     sig = "|".join(f"{f}:{os.path.getsize(f)}:{os.path.getmtime(f)}" for f in files if os.path.exists(f))
-    key = hashlib.md5(f"{sig}|{tz}|{fmt}".encode()).hexdigest()[:12]
+    key = hashlib.md5(f"{sig}|{tz}|{fmt}|rolls".encode()).hexdigest()[:12]
     cache = CACHE_DIR / f"{Path(files[0]).name.split('.')[0]}_{key}.parquet"
     if use_cache and cache.exists():
         return pd.read_parquet(cache)
@@ -148,19 +148,42 @@ def _finalize(raw: pd.DataFrame, time_col: str | None, tz: str) -> pd.DataFrame:
     missing = [c for c in ("open", "high", "low", "close") if c not in df.columns]
     if missing:
         raise ValueError(f"Faltan columnas {missing}. Columnas: {list(df.columns)}")
-    out = pd.DataFrame(
-        {
-            "open": df["open"].astype(float).to_numpy(),
-            "high": df["high"].astype(float).to_numpy(),
-            "low": df["low"].astype(float).to_numpy(),
-            "close": df["close"].astype(float).to_numpy(),
-            "volume": (df["volume"].astype(float).to_numpy() if "volume" in df.columns else 1.0),
-        },
-        index=pd.DatetimeIndex(idx).tz_convert(ET),
-    )
+    cols = {
+        "open": df["open"].astype(float).to_numpy(),
+        "high": df["high"].astype(float).to_numpy(),
+        "low": df["low"].astype(float).to_numpy(),
+        "close": df["close"].astype(float).to_numpy(),
+        "volume": (df["volume"].astype(float).to_numpy() if "volume" in df.columns else 1.0),
+    }
+    if "instrument_id" in df.columns:
+        cols["instrument_id"] = df["instrument_id"].to_numpy()
+    out = pd.DataFrame(cols, index=pd.DatetimeIndex(idx).tz_convert(ET))
     out = out[out.index.notna()]
     out = out[~out.index.duplicated(keep="last")].sort_index()
     out.index.name = "time"
+    if "instrument_id" in out.columns:
+        out = back_adjust(out)
+    return out
+
+
+def back_adjust(df: pd.DataFrame, col: str = "instrument_id") -> pd.DataFrame:
+    """Ajuste por diferencia de un continuo con cambios de contrato (como el B-ADJ de TradingView).
+
+    Los continuos sin ajustar (p.ej. NQ.v.0 de Databento) saltan en cada roll por la diferencia de
+    precio entre contratos: eso inventa gaps y engorda el ATR ese día. En cada cambio de `col`, el
+    salto entre el primer open del contrato nuevo y el último close del anterior se suma a toda la
+    historia previa; el contrato vigente conserva sus precios reales.
+    """
+    iid = df[col].to_numpy()
+    sw = np.flatnonzero(iid[1:] != iid[:-1]) + 1  # primera barra de cada contrato nuevo
+    out = df.drop(columns=col)
+    if not len(sw):
+        return out
+    steps = np.zeros(len(df))
+    steps[sw - 1] = df["open"].to_numpy()[sw] - df["close"].to_numpy()[sw - 1]
+    offset = np.cumsum(steps[::-1])[::-1]  # suma de los saltos posteriores a cada barra
+    for c in ("open", "high", "low", "close"):
+        out[c] = out[c].to_numpy() + offset
     return out
 
 

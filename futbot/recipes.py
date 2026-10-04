@@ -34,6 +34,12 @@ RECIPES: dict[str, Recipe] = {
         Recipe("nq_orb5_gap", "orb_zarattini", "MNQ", "NQ · ORB 5 min + filtro de gap, hasta 11:30",
                "Zarattini & Aziz (2023) + filtro 'día en juego' (gap >= 0,3 ATR diario); ver docs/ESTRATEGIA_TRADINGVIEW.md",
                dict(window_start="09:30", window_end="11:30", or_minutes=5, target_r=10.0, min_gap_atr=0.3)),
+        Recipe("nq_orb5_rapida", "opening_quick", "MNQ", "NQ · ORB 5 min rápido: gap, stop en la mitad, salida 10:35",
+               "Zarattini & Aziz (2023) + día en juego (gap >= 0,3 ATR) + stop en la mitad de la vela 9:30-9:35 y "
+               "salida por tiempo a los 60 min; stop mínimo 6 pts (5x el costo); validado en MNQ real 2019-2026 "
+               "(docs/ESTRATEGIA_TRADINGVIEW.md)",
+               dict(window_start="09:30", window_end="10:35", mode="market", or_minutes=5, stop_mode="mid",
+                    target_r=10.0, min_gap_atr=0.3, direction="both", min_risk_pts=6.0)),
         Recipe("nq_orb5_atr", "orb_zarattini", "MNQ", "NQ · ORB 5 min, stop 10% ATR, salida al cierre",
                "Zarattini, Barbon & Aziz (2024), SSRN 4729284",
                dict(IDX, or_minutes=5, stop_atr=0.10, target_r=None)),

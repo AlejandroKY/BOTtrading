@@ -3,9 +3,10 @@
 Investigación y kit en Python para construir un bot de futuros (ES, NQ, GC, CL, ZN, 6E) pensado
 para las reglas de las prop firms (Topstep, Apex, Tradeify, MyFundedFutures, Lucid...).
 
-- 📈 **[pine/orb5_nq_senales.pine](pine/orb5_nq_senales.pine)**: el bot de señales para **TradingView** (NQ/MNQ,
-  9:30-11:30 NY): compra/venta, stop, take profit, contratos para tu riesgo, panel y alertas al celular.
-  Guía completa (qué esperar, instalación, alertas, ejecución y plan de validación):
+- 📈 **[pine/orb5_nq_rapido.pine](pine/orb5_nq_rapido.pine)**: el bot de señales para **TradingView** (NQ/MNQ,
+  trade rápido de 9:35 a 10:35 NY como máximo): si hoy se opera, compra/venta, stop, contratos para tu riesgo,
+  zonas de riesgo y de ganancia, panel y alertas al celular. Validado con datos reales de CME 2019-2026.
+  Guía completa (qué esperar, resultados 2024-2026, instalación, alertas, ejecución y plan de validación):
   **[docs/ESTRATEGIA_TRADINGVIEW.md](docs/ESTRATEGIA_TRADINGVIEW.md)**.
 - 📄 **[docs/INVESTIGACION_ESTRATEGIAS.md](docs/INVESTIGACION_ESTRATEGIAS.md)**: las 7 estrategias (reglas exactas,
   evidencia publicada y fuentes), reglas de prop firms 2026, si permiten bots, repositorios recomendados y hoja de ruta.
@@ -80,13 +81,13 @@ python -m futbot backtest --strategy range_breakout --symbol MCL \
 python -m futbot prop --recipe nq_orb5 --firm topstep_50k --firm tradeify_growth_50k --max-size 15
 
 # Números de referencia del indicador de TradingView (acierto y R medio, netos y brutos, por año)
-python -m futbot stats --recipe nq_orb5_gap --symbol NQ
+python -m futbot stats --recipe nq_orb5_rapida --symbol MNQ --csv "data/real/NQ_1m_*.parquet"
 
 # Regenerar docs/RESULTADOS_BACKTEST.md con todas las recetas (~7 min)
 python -m futbot report
 ```
 
-Recetas incluidas (`python -m futbot list`): `nq_orb5`, `nq_orb5_gap` (la del indicador de TradingView), `nq_orb5_atr`, `es_orb5`, `es_noise_area`, `nq_noise_area`,
+Recetas incluidas (`python -m futbot list`): `nq_orb5`, `nq_orb5_rapida` (la del indicador de TradingView), `nq_orb5_gap` (versión anterior del indicador), `nq_orb5_atr`, `es_orb5`, `es_noise_area`, `nq_noise_area`,
 `es_last30`, `nq_last30`, `zn_last30`, `gc_last30`, `cl_last30`, `6e_last30`, `cl_orb15`, `gc_london`, `6e_london`,
 `es_orb30`, `nq_orb30`, `es_gap_fill`, `nq_gap_fill`, `gc_day_short`.
 
@@ -97,15 +98,16 @@ futbot/
 ├── contracts.py      # specs de ES/MES, NQ/MNQ, GC/MGC, CL/MCL, ZN, 6E/M6E... (tick, $/tick, comisión)
 ├── data.py           # carga de CSV (UTC → hora de Nueva York) y de FutureSharks, caché parquet
 ├── engine.py         # motor barra a barra: market/stop/limit, brackets OCO, slippage, límite diario, sin overnight
-├── strategies/       # orb.py (ORB 5 min, rupturas de rango) · momentum.py (Noise Area, última media hora)
-│                     # reversion.py (gap fill, sesgo horario)
+├── strategies/       # orb.py (ORB 5 min, rupturas de rango) · opening.py (trades rápidos de la apertura)
+│                     # momentum.py (Noise Area, última media hora) · reversion.py (gap fill, sesgo horario)
 ├── recipes.py        # estrategia + mercado + parámetros de cada fuente
 ├── metrics.py        # win rate, profit factor, payoff, Sharpe, drawdown, peor día, tabla anual
 ├── propfirm.py       # simulador de evaluaciones (trailing EOD/intradía, DLL, consistencia, plazo) + presets 50K
 ├── report.py         # genera docs/RESULTADOS_BACKTEST.md
 └── cli.py            # python -m futbot ...
 tests/                # tests del motor, estrategias y simulador
-pine/                 # indicador de TradingView (mismas reglas que la receta nq_orb5_gap)
+pine/                 # indicador de TradingView (mismas reglas que la receta nq_orb5_rapida)
+scripts/              # descarga de datos reales de CME (Databento), con ajuste de rolls
 ```
 
 ## Escribir una estrategia nueva

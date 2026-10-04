@@ -1,0 +1,305 @@
+//@version=6
+// =====================================================================================
+// ORB 5m NQ rápido (futbot) · github.com/AlejandroKY/BOTtrading
+// Mismas reglas que la receta `nq_orb5_rapida` de futbot (verificado con un port 1:1 en Python):
+//   1. Día en juego: |apertura 9:30 - cierre 16:00 de ayer| >= 0,30 x ATR(14) diario de ayer.
+//   2. Vela de 9:30 a 9:35 (5 min). Verde -> COMPRA a mercado a las 9:35. Roja -> VENTA.
+//   3. Stop: mitad de esa vela (redondeada al tick, alejándose de la entrada).
+//   4. Salida: stop, take profit lejano de 10R (casi nunca llega) o por tiempo a las 10:35.
+//   5. Tamaño: contratos = riesgo en USD / (distancia al stop x valor del punto). Si no cabe
+//      ni 1 contrato, o si el stop queda a menos de 6 puntos, NO se opera (se muestra en gris).
+// Gráfico de 1 o 5 minutos de NQ1! o MNQ1!. Herramienta de estudio, no asesoría financiera.
+// =====================================================================================
+indicator("ORB 5m NQ rápido (futbot)", shorttitle = "ORB5 rápido", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
+
+// ------------------------------------------------------------------- Entradas
+grpE = "Estrategia"
+minGapAtr = input.float(0.30, "Gap mínimo (× ATR diario)", minval = 0.0, step = 0.05, group = grpE, tooltip = "Sólo se opera si la apertura de las 9:30 se aleja del cierre de ayer (16:00) al menos esta fracción del ATR diario. Sin este filtro la estrategia pierde.")
+holdMin   = input.int(60, "Salida por tiempo (minutos después de entrar)", minval = 5, maxval = 360, step = 5, group = grpE, tooltip = "60 = cierra a las 10:35 si no tocó el stop ni el take profit.")
+targetR   = input.float(10.0, "Take profit (R = veces el riesgo)", minval = 1.0, step = 0.5, group = grpE, tooltip = "Lejano a propósito: las pocas operaciones que corren mucho pagan todas las pérdidas. Con 3R la estrategia deja de ganar.")
+dirMode   = input.string("Ambas", "Dirección", options = ["Ambas", "Solo compras", "Solo ventas"], group = grpE)
+atrLen    = input.int(14, "Días del ATR", minval = 2, group = grpE)
+adjRolls  = input.bool(true, "Ajustar cambios de contrato (recomendado)", group = grpE, tooltip = "Calcula el gap y el ATR con datos ajustados por vencimiento: evita gaps falsos el día del roll (4 veces al año).")
+
+grpR = "Riesgo"
+riskUsd     = input.float(150.0, "Riesgo por operación (USD)", minval = 10, step = 10, group = grpR, tooltip = "Lo que pierdes si toca el stop. En Topstep 50K: $150.")
+contractSel = input.string("MNQ (micro, $2/punto)", "Contrato que operas", options = ["MNQ (micro, $2/punto)", "NQ (mini, $20/punto)"], group = grpR)
+maxQty      = input.int(50, "Máximo de contratos", minval = 1, group = grpR)
+costPts     = input.float(1.2, "Costo por operación (puntos)", minval = 0, step = 0.1, group = grpR, tooltip = "Comisión + deslizamiento de ida y vuelta, en puntos. 1,2 = ~$1,40 de comisión en MNQ + 2 ticks.")
+minRiskPts  = input.float(6.0, "Stop mínimo (puntos)", minval = 0, step = 0.5, group = grpR, tooltip = "Si el stop queda más cerca que esto, no se opera: las comisiones se comerían la ganancia (6 = 5 veces el costo).")
+
+grpV = "Visual"
+showSkip  = input.bool(true, "Mostrar días sin operación (y por qué)", group = grpV)
+showTp    = input.bool(false, "Dibujar el take profit lejano", group = grpV, tooltip = "Está a 10R: suele quedar muy lejos del precio. Su valor siempre aparece en el panel.")
+showPanel = input.bool(true, "Mostrar panel", group = grpV)
+panelPos  = input.string("Arriba derecha", "Posición del panel", options = ["Arriba derecha", "Arriba izquierda", "Abajo derecha", "Abajo izquierda"], group = grpV)
+colBuy    = input.color(#1f9d55, "Compras", group = grpV, inline = "c")
+colSell   = input.color(#d64545, "Ventas", group = grpV, inline = "c")
+
+// ------------------------------------------------------------------- Constantes y utilidades
+TZ        = "America/New_York"
+OPEN_MIN  = 9 * 60 + 30
+OR_END    = OPEN_MIN + 5
+RTH_END   = 16 * 60
+EXIT_MIN  = OR_END + holdMin
+MIN_TICKS = 4
+tick      = syminfo.mintick
+pv        = contractSel == "NQ (mini, $20/punto)" ? 20.0 : 2.0
+cName     = contractSel == "NQ (mini, $20/punto)" ? "NQ" : "MNQ"
+GRAY      = color.new(#787b86, 0)
+
+fPx(float x) => str.tostring(x, format.mintick)
+fR(float x) => (x >= 0 ? "+" : "") + str.tostring(x, "0.0") + "R"
+fUsd(float x) => (x < 0 ? "-$" : "+$") + str.tostring(math.abs(math.round(x)), "#,###")
+fMoney(float x) => "$" + str.tostring(math.abs(math.round(x)), "#,###")
+fHM(int m) => str.tostring(math.floor(m / 60)) + ":" + str.format("{0,number,00}", m % 60)
+roundDown(float x) => math.floor(math.round(x / tick, 6)) * tick
+roundUp(float x) => math.ceil(math.round(x / tick, 6)) * tick
+
+// ------------------------------------------------------------------- Tiempo (Nueva York)
+tMin   = hour(time, TZ) * 60 + minute(time, TZ)
+tcMin  = hour(time_close, TZ) * 60 + minute(time_close, TZ)
+dayKey = year(time, TZ) * 10000 + month(time, TZ) * 100 + dayofmonth(time, TZ)
+inRth  = tMin >= OPEN_MIN and tMin < RTH_END
+tfOk   = timeframe.isminutes and (timeframe.multiplier == 1 or timeframe.multiplier == 5)
+
+// Datos para el filtro: sesión completa (Globex), cierre real (no settlement) y, si se pide,
+// ajustados por cambio de contrato. Las entradas, stops y salidas usan los precios del gráfico.
+tkAdj = ticker.modify(syminfo.tickerid, session = session.extended, backadjustment = adjRolls ? backadjustment.on : backadjustment.inherit, settlement_as_close = settlement_as_close.off)
+[aOpen, aClose] = request.security(tkAdj, timeframe.period, [open, close])
+atrPrev = request.security(tkAdj, "D", ta.atr(atrLen)[1], lookahead = barmerge.lookahead_on)
+
+// ------------------------------------------------------------------- Cierre de ayer (16:00)
+var float curCloseA  = na
+var float prevCloseA = na
+var int   curDay     = na
+if inRth
+    if na(curDay) or dayKey != curDay
+        prevCloseA := curCloseA
+        curDay     := dayKey
+    curCloseA := aClose
+
+// ------------------------------------------------------------------- Vela de 9:30 a 9:35
+var int   orDay   = na
+var int   orT0    = na
+var float orOpen  = na
+var float orHigh  = na
+var float orLow   = na
+var float orOpenA = na
+if inRth and tMin == OPEN_MIN
+    orDay   := dayKey
+    orT0    := time
+    orOpen  := open
+    orHigh  := high
+    orLow   := low
+    orOpenA := aOpen
+else if inRth and tMin < OR_END and orDay == dayKey
+    orHigh := math.max(orHigh, high)
+    orLow  := math.min(orLow, low)
+
+// ------------------------------------------------------------------- Estado
+var int    sigDir   = 0
+var float  sigStop  = na
+var int    sigQty   = 0
+var int    pos      = 0
+var int    posDay   = na
+var int    posBar   = na
+var float  entryPx  = na
+var float  stopPx   = na
+var float  tpPx     = na
+var float  riskPts  = na
+var float  bestPx   = na
+var int    qty      = 0
+var box    bxRisk   = na
+var box    bxGain   = na
+var line   lnEntry  = na
+var string sHoy     = "Esperando la apertura (9:30)"
+var string sSenal   = "—"
+var string sNiveles = "—"
+var string sTp      = "—"
+var string sEstado  = "Sin operación"
+var color  cEstado  = GRAY
+var int    sDay     = na
+
+// estadísticas de las operaciones de este gráfico (netas de costos)
+var int   nOps    = 0
+var int   nWin    = 0
+var float sumR    = 0.0
+var float sumUsd  = 0.0
+var int   streak  = 0
+var int   maxStrk = 0
+
+if na(sDay) or dayKey != sDay
+    sDay     := dayKey
+    sHoy     := "Esperando la apertura (9:30)"
+    sSenal   := "—"
+    sNiveles := "—"
+    sTp      := "—"
+    sEstado  := "Sin operación"
+    cEstado  := GRAY
+if inRth and tMin >= OPEN_MIN and tMin < OR_END and orDay == dayKey and not barstate.isconfirmed
+    sHoy := "Formando la vela de 9:30 (señal a las 9:35)"
+
+buySig  = false
+sellSig = false
+exitNow = false
+stopHit = false
+
+closeTrade(float px, string why) =>
+    netPts = (px - entryPx) * pos - costPts
+    r      = netPts / riskPts
+    usd    = netPts * pv * qty
+    col    = r > 0 ? colBuy : r < 0 ? colSell : GRAY
+    label.new(time, px, fR(r) + "  " + fUsd(usd), xloc = xloc.bar_time, color = color.new(col, 10), textcolor = color.white, style = label.style_label_left, size = size.small, tooltip = why + " a " + fPx(px) + "\nEntrada " + fPx(entryPx) + " · stop " + fPx(stopPx) + "\nResultado neto de costos: " + fR(r) + " = " + fUsd(usd) + " con " + str.tostring(qty) + " " + cName)
+    box.set_right(bxRisk, time_close)
+    box.set_right(bxGain, time_close)
+    line.set_x2(lnEntry, time_close)
+    [r, usd, col]
+
+// ------------------------------------------------------------------- 1) 9:35: ¿hay señal?
+orDone = barstate.isconfirmed and tfOk and inRth and orDay == dayKey and tcMin == OR_END
+if orDone
+    dir    = close > orOpen ? 1 : close < orOpen ? -1 : 0
+    gapAtr = math.abs(orOpenA - prevCloseA) / atrPrev
+    refY   = prevCloseA - (orOpenA - orOpen)   // cierre de ayer en precios del contrato actual
+    mid    = (orHigh + orLow) / 2
+    stop   = dir > 0 ? roundDown(mid) : roundUp(mid)
+    riskE  = math.abs(close - stop)
+    q      = riskE > 0 ? math.min(maxQty, math.floor(riskUsd / (riskE * pv))) : 0
+    dirOk  = dir != 0 and (dirMode == "Ambas" or (dirMode == "Solo compras" and dir > 0) or (dirMode == "Solo ventas" and dir < 0))
+    gapOk  = not na(gapAtr) and gapAtr >= minGapAtr
+    why    = not gapOk ? "gap chico (" + (na(gapAtr) ? "sin datos" : str.tostring(gapAtr, "0.00") + " ATR") + ")" : orHigh - orLow < MIN_TICKS * tick ? "vela muy chica" : not dirOk ? (dir == 0 ? "vela sin dirección" : "dirección desactivada") : (close - stop) * dir <= 0 ? "cierre detrás de la mitad" : riskE < minRiskPts ? "stop muy cerca (" + str.tostring(riskE, "0.##") + " pts)" : q < 1 ? "riesgo " + fMoney(riskE * pv) + " > " + fMoney(riskUsd) : ""
+    gapTxt = na(gapAtr) ? "sin datos" : str.tostring(gapAtr, "0.00") + " ATR"
+    sHoy  := gapOk ? "Día en juego ✓  gap " + gapTxt : "Día normal: no se opera (gap " + gapTxt + ")"
+    exitT  = time_close + holdMin * 60000
+    if not na(refY) and (why == "" or showSkip)
+        line.new(orT0, refY, exitT, refY, xloc = xloc.bar_time, color = color.new(GRAY, 30), style = line.style_dotted)
+        label.new(exitT, refY, "cierre ayer", xloc = xloc.bar_time, color = color(na), textcolor = GRAY, style = label.style_label_left, size = size.tiny)
+    if why == ""
+        sigDir  := dir
+        sigStop := stop
+        sigQty  := q
+        buySig  := dir > 0
+        sellSig := dir < 0
+        sSenal  := (dir > 0 ? "COMPRA " : "VENTA ") + str.tostring(q) + " " + cName + " a mercado"
+        sNiveles := "entrada ~" + fPx(close) + " · stop " + fPx(stop)
+        sTp     := fPx(close + dir * targetR * riskE) + " (" + str.tostring(targetR, "0.#") + "R)"
+        sEstado := "Entrando a las 9:35"
+        cEstado := dir > 0 ? colBuy : colSell
+        col = dir > 0 ? colBuy : colSell
+        box.new(orT0, orHigh, time_close, orLow, xloc = xloc.bar_time, border_color = color.new(col, 40), bgcolor = color.new(col, 88), text = "vela 9:30", text_size = size.tiny, text_color = color.new(col, 20), text_valign = text.align_top)
+        label.new(time_close, dir > 0 ? orLow : orHigh, dir > 0 ? "COMPRA" : "VENTA", xloc = xloc.bar_time, color = col, textcolor = color.white, style = dir > 0 ? label.style_label_up : label.style_label_down, size = size.normal, tooltip = (dir > 0 ? "COMPRA " : "VENTA ") + str.tostring(q) + " " + cName + " a mercado (9:35)\nStop: " + fPx(stop) + "  (riesgo ~" + fUsd(-q * riskE * pv) + ")\nTake profit: " + fPx(close + dir * targetR * riskE) + " (" + str.tostring(targetR, "0.#") + "R, lejano)\nSalida por tiempo: " + fHM(EXIT_MIN) + "\nGap: " + gapTxt)
+        alert((dir > 0 ? "COMPRA " : "VENTA ") + str.tostring(q) + " " + cName + " a mercado ~" + fPx(close) + " | STOP " + fPx(stop) + " | TP " + fPx(close + dir * targetR * riskE) + " | cerrar a las " + fHM(EXIT_MIN) + " NY", alert.freq_once_per_bar_close)
+    else
+        sSenal  := "No se opera: " + why
+        sEstado := "Sin operación hoy"
+        if showSkip
+            box.new(orT0, orHigh, time_close, orLow, xloc = xloc.bar_time, border_color = color.new(GRAY, 50), bgcolor = color.new(GRAY, 90))
+            label.new(orT0, orHigh, "sin trade: " + why, xloc = xloc.bar_time, color = color(na), textcolor = GRAY, style = label.style_label_down, size = size.small, tooltip = sHoy + "\nVela 9:30: " + fPx(orOpen) + " → " + fPx(close) + " (máx " + fPx(orHigh) + ", mín " + fPx(orLow) + ")")
+
+// ------------------------------------------------------------------- 2) 9:35: entrada a mercado
+else if sigDir != 0
+    e = open
+    if (sigStop - e) * sigDir < 0 and dayKey == orDay
+        pos     := sigDir
+        posDay  := dayKey
+        posBar  := bar_index
+        entryPx := e
+        stopPx  := sigStop
+        riskPts := math.abs(e - sigStop)
+        tpPx    := math.round((e + pos * targetR * riskPts) / tick) * tick
+        bestPx  := e
+        qty     := sigQty
+        col      = pos > 0 ? colBuy : colSell
+        tEnd     = time + holdMin * 60000
+        bxRisk  := box.new(time, math.max(e, stopPx), tEnd, math.min(e, stopPx), xloc = xloc.bar_time, border_color = color.new(colSell, 60), bgcolor = color.new(colSell, 82), text = "STOP " + fPx(stopPx) + "   " + fUsd(-riskPts * pv * qty) + " · " + str.tostring(qty) + " " + cName, text_size = size.small, text_color = color.new(colSell, 0), text_halign = text.align_left, text_valign = pos > 0 ? text.align_bottom : text.align_top)
+        bxGain  := box.new(time, e, tEnd, e, xloc = xloc.bar_time, border_color = color.new(colBuy, 60), bgcolor = color.new(colBuy, 82), text = "", text_size = size.small, text_color = color.new(colBuy, 0), text_halign = text.align_left, text_valign = pos > 0 ? text.align_top : text.align_bottom)
+        lnEntry := line.new(time, e, tEnd, e, xloc = xloc.bar_time, color = color.new(col, 0), width = 2)
+        label.new(tEnd, e, "entrada " + fPx(e) + " · salir " + fHM(EXIT_MIN), xloc = xloc.bar_time, color = color(na), textcolor = col, style = label.style_label_left, size = size.small)
+        if showTp
+            line.new(time, tpPx, tEnd, tpPx, xloc = xloc.bar_time, color = color.new(colBuy, 30), style = line.style_dashed)
+        sNiveles := "entrada " + fPx(e) + " · stop " + fPx(stopPx)
+        sTp      := fPx(tpPx) + " (" + str.tostring(targetR, "0.#") + "R)"
+    else
+        sSenal  := "—"
+        sEstado := "Cancelada: abrió más allá del stop"
+    sigDir := 0
+
+// ------------------------------------------------------------------- 3) gestión: stop, TP, tiempo
+if pos != 0
+    same = bar_index == posBar
+    hitStop = pos > 0 ? low <= stopPx : high >= stopPx
+    hitTp   = pos > 0 ? high >= tpPx + tick : low <= tpPx - tick
+    px  = float(na)
+    why = ""
+    if dayKey != posDay
+        px  := open
+        why := "Cierre de emergencia (otro día)"
+    else if hitStop
+        px  := same ? stopPx : pos > 0 ? math.min(open, stopPx) : math.max(open, stopPx)
+        why := "Stop"
+        stopHit := true
+    else if hitTp
+        px  := same ? tpPx : pos > 0 ? math.max(open, tpPx) : math.min(open, tpPx)
+        why := "Take profit " + str.tostring(targetR, "0.#") + "R"
+    else if barstate.isconfirmed and tcMin >= EXIT_MIN
+        px  := close
+        why := "Salida por tiempo " + fHM(EXIT_MIN)
+        exitNow := true
+    // mejor precio a favor (caja verde); en la vela del stop no se sabe qué llegó primero
+    if not stopHit
+        bestPx := pos > 0 ? math.max(bestPx, why == "" or exitNow ? high : math.min(high, px)) : math.min(bestPx, why == "" or exitNow ? low : math.max(low, px))
+    box.set_top(bxGain, pos > 0 ? bestPx : entryPx)
+    box.set_bottom(bxGain, pos > 0 ? entryPx : bestPx)
+    box.set_text(bxGain, "máx " + fR((bestPx - entryPx) * pos / riskPts))
+    if not na(px)
+        [r, usd, col] = closeTrade(px, why)
+        nOps   += 1
+        nWin   += r > 0 ? 1 : 0
+        sumR   += r
+        sumUsd += usd
+        streak := r > 0 ? 0 : streak + 1
+        maxStrk := math.max(maxStrk, streak)
+        sEstado := "Cerrada " + fR(r) + " (" + why + ")"
+        cEstado := col
+        side = pos > 0 ? "compra" : "venta"
+        if stopHit
+            alert("STOP tocado: " + side + " cerrada en ~" + fPx(px) + " (" + fR(r) + ")", alert.freq_once_per_bar)
+        else if exitNow
+            alert("SALIDA " + fHM(EXIT_MIN) + ": cierra la " + side + " a mercado ahora (~" + fPx(px) + ", " + fR(r) + ")", alert.freq_once_per_bar_close)
+        else
+            alert(why + ": " + side + " cerrada en ~" + fPx(px) + " (" + fR(r) + ")", alert.freq_once_per_bar)
+        pos := 0
+    else
+        rNow = (close - entryPx) * pos / riskPts
+        sEstado := "En curso " + fR(rNow) + " · cierra " + fHM(EXIT_MIN)
+        cEstado := rNow >= 0 ? colBuy : colSell
+
+alertcondition(buySig, "Señal de COMPRA", "ORB 5m NQ: COMPRA a mercado (ver stop y salida en el gráfico)")
+alertcondition(sellSig, "Señal de VENTA", "ORB 5m NQ: VENTA a mercado (ver stop y salida en el gráfico)")
+alertcondition(exitNow, "Salida por tiempo", "ORB 5m NQ: cerrar la posición (salida por tiempo)")
+alertcondition(stopHit, "Stop tocado", "ORB 5m NQ: el precio tocó el stop")
+
+// ------------------------------------------------------------------- Panel
+tblPos = panelPos == "Arriba izquierda" ? position.top_left : panelPos == "Abajo derecha" ? position.bottom_right : panelPos == "Abajo izquierda" ? position.bottom_left : position.top_right
+var table tbl = table.new(tblPos, 2, 8, bgcolor = color.new(#131722, 10), frame_color = color.new(GRAY, 60), frame_width = 1, border_color = color.new(GRAY, 85), border_width = 1)
+
+cell(int row, string k, string v, color c) =>
+    table.cell(tbl, 0, row, k, text_color = GRAY, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, row, v, text_color = c, text_size = size.small, text_halign = text.align_left)
+
+if showPanel and barstate.isfirst
+    table.cell(tbl, 0, 0, "ORB 5m rápido · NQ  (" + fMoney(riskUsd) + " por trade)", text_color = color.white, text_size = size.small, text_halign = text.align_left)
+    table.merge_cells(tbl, 0, 0, 1, 0)
+if showPanel and barstate.islast
+    if not tfOk
+        cell(1, "Aviso", "Usa un gráfico de 1 o 5 minutos", colSell)
+    else
+        cell(1, "Hoy", sHoy, str.contains(sHoy, "✓") ? colBuy : GRAY)
+    cell(2, "Señal", sSenal, str.startswith(sSenal, "COMPRA") ? colBuy : str.startswith(sSenal, "VENTA") ? colSell : GRAY)
+    cell(3, "Niveles", sNiveles, color.white)
+    cell(4, "TP lejano", sTp, color.white)
+    cell(5, "Estado", sEstado, cEstado)
+    statTxt = nOps == 0 ? "sin operaciones en el historial cargado" : str.tostring(nOps) + " trades · " + str.tostring(100.0 * nWin / nOps, "0") + "% acierto · " + fR(sumR / nOps) + " prom · " + fUsd(sumUsd) + " · peor racha " + str.tostring(maxStrk)
+    cell(6, "En este gráfico", statTxt, nOps == 0 ? GRAY : sumR >= 0 ? colBuy : colSell)
+    cell(7, "Backtest 2019-26", "MNQ real: 24% acierto · +0.3R por trade · 8 de 8 años +", GRAY)
