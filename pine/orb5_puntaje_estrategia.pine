@@ -4,6 +4,8 @@
 // Versión strategy() de pine/orb5_puntaje.pine para ver el backtest en el Probador de estrategias.
 // Mismas señales que el indicador. Úsala en MNQ1! o MES1! (micro): el tamaño se calcula con el valor
 // del punto del gráfico, así que en NQ1!/ES1! (mini) casi nunca cabe un contrato con $200 de riesgo.
+// El colchón para el riesgo por escalones se calcula solo, simulando el límite de pérdida de la cuenta
+// ($2.000 que sigue al mejor saldo y se fija $100 sobre el saldo inicial, como LucidFlex 50K).
 // Diferencias con futbot: TradingView decide el orden de stop y take profit dentro de una vela y, en la
 // vela de entrada, el parcial y el take profit usan el precio de cierre de las 9:35 como entrada
 // estimada. Por eso sus números pueden diferir un poco del backtest de futbot.
@@ -28,11 +30,16 @@ nqSym = input.symbol("CME_MINI:NQ1!", "Nasdaq", group = grpM)
 esSym = input.symbol("CME_MINI:ES1!", "S&P 500", group = grpM)
 
 grpR = "Riesgo"
-riskUsd  = input.float(200.0, "Riesgo por operación (USD)", minval = 10, step = 10, group = grpR, tooltip = "Lo que pierdes si toca el stop. Para una cuenta de 50K: $200.")
+riskMode = input.string("Escalones según colchón (recomendado)", "Riesgo por operación", options = ["Escalones según colchón (recomendado)", "Fijo"], group = grpR, tooltip = "Escalones: $300 si te quedan $1.400 o más sobre el límite de pérdida de la cuenta, $200 entre $800 y $1.400, y $100 por debajo. En la simulación de cuentas de 50K suspende mucho menos que un riesgo fijo.")
+maxLossAcct = input.float(2000.0, "Límite de pérdida de la cuenta (USD)", minval = 100, step = 100, group = grpR, tooltip = "Se usa para calcular el colchón del riesgo por escalones: el límite sigue al mejor saldo y se fija en el saldo inicial + el valor de abajo.")
+lockAcct = input.float(100.0, "El límite se fija en saldo inicial + (USD)", minval = 0, step = 50, group = grpR)
+riskFix  = input.float(200.0, "Riesgo fijo (USD)", minval = 10, step = 10, group = grpR, tooltip = "Sólo si elegiste 'Fijo'. Para una cuenta de 50K: $200.")
 sizeMode = input.string("Micro (MNQ / MES)", "Contratos", options = ["Micro (MNQ / MES)", "Mini (NQ / ES)"], group = grpR)
 maxQty   = input.int(50, "Máximo de contratos", minval = 1, group = grpR)
 costNq   = input.float(1.2, "Costo por operación NQ (puntos)", minval = 0, step = 0.1, group = grpR, tooltip = "Comisión + deslizamiento de ida y vuelta. El stop mínimo es 5 veces este costo (NQ: 6 puntos).")
 costEs   = input.float(0.8, "Costo por operación ES (puntos)", minval = 0, step = 0.1, group = grpR, tooltip = "ES: stop mínimo 4 puntos.")
+stepRisk(float c) => c >= 1400 ? 300.0 : c >= 800 ? 200.0 : 100.0
+var float riskUsd = riskMode == "Fijo" ? riskFix : stepRisk(maxLossAcct)
 
 // ------------------------------------------------------------------- Constantes y utilidades
 TZ       = "America/New_York"
@@ -114,7 +121,7 @@ orData() =>
     [done, oO, oH, oL, close, oOnH, oOnL, pH, pL, pC]
 
 // Puntaje y validez de la señal de un mercado (mismas reglas que futbot/strategies/puntaje.py)
-signal(bool done, float oO, float oH, float oL, float oC, float onH, float onL, float pH, float pL, float pC, float atr, float pv, float cost, bool monday) =>
+signal(bool done, float oO, float oH, float oL, float oC, float onH, float onL, float pH, float pL, float pC, float atr, float pv, float cost, bool monday, float rUsd) =>
     dir    = oC > oO ? 1 : oC < oO ? -1 : 0
     gapAtr = math.abs(oO - pC) / atr
     rng    = oH - oL
@@ -128,8 +135,8 @@ signal(bool done, float oO, float oH, float oL, float oC, float onH, float onL, 
     sPd    = (dir > 0 ? oO > pH : oO < pL) ? 15.0 : 0.0
     sMon   = monday ? 10.0 : 0.0
     score  = math.floor(sOn + sBody + sGap + sPd + sMon + 0.5)
-    nCt    = risk > 0 ? math.min(maxQty, math.floor(riskUsd / (risk * pv))) : 0
-    why    = not done ? "sin datos" : na(gapAtr) or gapAtr < minGapAtr ? "gap chico" : dir == 0 ? "vela sin dirección" : rng < 4 * TICK ? "vela muy chica" : risk <= 0 ? "cierre detrás de la mitad" : risk < 5 * cost ? "stop muy cerca" : score < minScore ? "puntaje " + str.tostring(score) + " < " + str.tostring(minScore) : nCt < 1 ? "riesgo " + fMoney(risk * pv) + " > " + fMoney(riskUsd) : ""
+    nCt    = risk > 0 ? math.min(maxQty, math.floor(rUsd / (risk * pv))) : 0
+    why    = not done ? "sin datos" : na(gapAtr) or gapAtr < minGapAtr ? "gap chico" : dir == 0 ? "vela sin dirección" : rng < 4 * TICK ? "vela muy chica" : risk <= 0 ? "cierre detrás de la mitad" : risk < 5 * cost ? "stop muy cerca" : score < minScore ? "puntaje " + str.tostring(score) + " < " + str.tostring(minScore) : nCt < 1 ? "riesgo " + fMoney(risk * pv) + " > " + fMoney(rUsd) : ""
     detail = "overnight " + str.tostring(sOn, "0") + " · cuerpo " + str.tostring(sBody, "0") + " · gap " + str.tostring(sGap, "0") + " · fuera de ayer " + str.tostring(sPd, "0") + " · lunes " + str.tostring(sMon, "0")
     [dir, stop, risk, score, nCt, why, detail, gapAtr]
 
@@ -170,11 +177,22 @@ var int   qPart   = 0
 var bool  partSet = false
 var bool  beSet   = false
 
+// ------------------------------------------------------------------- Colchón de la cuenta (riesgo por escalones)
+var float eqPeak  = strategy.initial_capital
+var float lossThr = strategy.initial_capital - maxLossAcct
+eqNow = strategy.initial_capital + strategy.netprofit
+if strategy.position_size == 0
+    eqPeak  := math.max(eqPeak, eqNow)
+    lossThr := math.max(lossThr, math.min(eqPeak - maxLossAcct, strategy.initial_capital + lockAcct))
+if riskMode != "Fijo"
+    riskUsd := stepRisk(eqNow - lossThr)
+plot(eqNow - lossThr, "Colchón sobre el límite (USD)", display = display.data_window)
+
 // ------------------------------------------------------------------- Señal (9:35) y entrada
 orDone = barstate.isconfirmed and tfOk and inRth and orDay == dayKey and tcMin == OR_END
 if orDone and strategy.position_size == 0
-    [nDir, nStop, nRisk, nScore, nQty, nWhy, nDet, nGap] = signal(nDone, nO, nH, nL, nC, nOnH, nOnL, nPH, nPL, nPC, nAtr, pvNq, costNq, monday)
-    [eDir, eStop, eRisk, eScore, eQty, eWhy, eDet, eGap] = signal(eDone, eO, eH, eL, eC, eOnH, eOnL, ePH, ePL, ePC, eAtr, pvEs, costEs, monday)
+    [nDir, nStop, nRisk, nScore, nQty, nWhy, nDet, nGap] = signal(nDone, nO, nH, nL, nC, nOnH, nOnL, nPH, nPL, nPC, nAtr, pvNq, costNq, monday, riskUsd)
+    [eDir, eStop, eRisk, eScore, eQty, eWhy, eDet, eGap] = signal(eDone, eO, eH, eL, eC, eOnH, eOnL, ePH, ePL, ePC, eAtr, pvEs, costEs, monday, riskUsd)
     nOk = nWhy == ""
     eOk = eWhy == ""
     sel = selMode == "Mejor puntaje" ? (nOk and (not eOk or nScore >= eScore) ? 1 : eOk ? 2 : 0) : (nOk ? 1 : eOk ? 2 : 0)

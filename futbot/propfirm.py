@@ -15,6 +15,7 @@ condiciones públicas a octubre de 2026; verifícalas en la web oficial antes de
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from typing import Optional
 
@@ -206,3 +207,96 @@ def best_size(table: pd.DataFrame) -> Optional[int]:
 
 def with_overrides(rules: PropRules | str, **kw) -> PropRules:
     return replace(_rules(rules), **kw)
+
+
+# ---------------------------------------------------------------------------------------------
+# Tamaño dinámico: el riesgo de cada trade depende del colchón que queda sobre el límite de pérdida
+
+
+def escalones(cushion: float, profit: float = 0.0) -> float:
+    """Riesgo por operación (USD) según el colchón sobre el límite de pérdida de la cuenta:
+    $300 con $1.400 o más, $200 entre $800 y $1.400, y $100 por debajo (pensado para cuentas de 50K
+    con límite de $2.000). Arriesga más cuando hay espacio y menos cerca del límite."""
+    return 300.0 if cushion >= 1400 else 200.0 if cushion >= 800 else 100.0
+
+
+def historical_pass_rate_sized(trades: pd.DataFrame, rules: PropRules | str, sizing=escalones,
+                               days: Optional[pd.DatetimeIndex] = None, horizon: Optional[int] = 250,
+                               step: int = 1) -> dict:
+    """Como historical_pass_rate, pero con el tamaño decidido trade a trade según el estado de la cuenta.
+
+    trades: una fila por trade con columnas date, R (resultado neto en múltiplos del riesgo), mae_r (peor
+    excursión en contra, en R, <= 0), risk_pts (distancia al stop en puntos) y point_value.
+    sizing(colchón, beneficio) -> riesgo en USD; se operan floor(riesgo / (risk_pts x point_value))
+    contratos (máximo `max_micros` de la firma); si no cabe ninguno, ese trade se salta.
+    days: días hábiles del histórico (por defecto, del primer al último trade). El drawdown intradía
+    ("intraday") se aproxima como EOD.
+    """
+    rules = _rules(rules)
+    t = trades.copy()
+    t["date"] = pd.to_datetime(t["date"]).dt.normalize()
+    if days is None:
+        days = pd.bdate_range(t["date"].min(), t["date"].max())
+    pos = pd.Index(days).get_indexer(t["date"])
+    t = t[pos >= 0].assign(_d=pos[pos >= 0]).sort_values(["_d"])
+    by_day: dict[int, list] = {}
+    for d, r, m, rk, pv in zip(t["_d"], t["R"], t["mae_r"], t["risk_pts"], t["point_value"]):
+        by_day.setdefault(int(d), []).append((float(r), min(float(m), 0.0), float(rk), float(pv)))
+    n = len(days)
+    a, L = rules.account_size, rules.max_loss
+    lock = None if rules.trail_lock is None else a + rules.trail_lock
+    limit = n if horizon is None else horizon
+    outcomes = []
+    for s in range(0, n, step):
+        bal = peak = a
+        thr = a - L
+        best_day = 0.0
+        traded = 0
+        res = None
+        for k in range(s, min(n, s + limit)):
+            day_pnl, did = 0.0, False
+            for r, m, rk, pv in by_day.get(k, ()):
+                q = int(min(rules.max_micros, math.floor(sizing(bal - thr, bal - a) / (rk * pv))))
+                if q < 1:
+                    continue
+                usd_r = q * rk * pv
+                if rules.daily_loss_limit is not None and day_pnl + m * usd_r <= -rules.daily_loss_limit:
+                    if rules.dll_fails:
+                        res = (FAIL, k - s + 1, bal - a)
+                        break
+                    bal += -rules.daily_loss_limit - day_pnl
+                    day_pnl, did = -rules.daily_loss_limit, True
+                    break
+                if bal + m * usd_r <= thr:
+                    res = (FAIL, k - s + 1, bal + m * usd_r - a)
+                    break
+                bal += r * usd_r
+                day_pnl += r * usd_r
+                did = True
+            if res is not None:
+                break
+            if did:
+                if rules.drawdown != "static":
+                    peak = max(peak, bal)
+                    new_thr = peak - L if lock is None else min(peak - L, lock)
+                    thr = max(thr, new_thr)
+                if bal <= thr:
+                    res = (FAIL, k - s + 1, bal - a)
+                    break
+                traded += 1
+                best_day = max(best_day, day_pnl)
+                profit = bal - a
+                if (profit >= rules.profit_target and traded >= rules.min_days
+                        and (rules.consistency is None or best_day <= rules.consistency * profit)):
+                    res = (PASS, k - s + 1, profit)
+                    break
+            if rules.max_days is not None and k - s + 1 >= rules.max_days:
+                res = (TIMEOUT, k - s + 1, bal - a)
+                break
+        if res is None:
+            if s + limit > n:
+                res = (INCOMPLETE, n - s, bal - a)
+            else:
+                res = (TIMEOUT, limit, bal - a)
+        outcomes.append(res)
+    return _aggregate(outcomes)

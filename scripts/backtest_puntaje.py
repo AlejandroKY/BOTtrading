@@ -9,6 +9,9 @@ Uso:
     # sólo NQ, otro umbral y otro riesgo:
     python scripts/backtest_puntaje.py --nq "data/real/NQ_1m_*.parquet" --puntaje 60 --riesgo 150
 
+Muestra también la probabilidad de aprobar con riesgo por escalones según el colchón ($300/$200/$100) y
+la "salud" del sistema: si los últimos 30 trades rinden peor que el 95 % de las ventanas históricas.
+
 Costos: NQ 1,2 puntos y ES 0,8 puntos por operación (comisión de micro + 2 ticks de deslizamiento).
 Los precios de cada año se usan tal cual: con datos viejos (NQ a 8.000) el riesgo en puntos era chico y
 los costos pesan más que hoy.
@@ -28,7 +31,7 @@ from futbot.contracts import get_contract  # noqa: E402
 from futbot.data import load_csv  # noqa: E402
 from futbot.engine import run_backtest  # noqa: E402
 from futbot.portfolio import combine_first  # noqa: E402
-from futbot.propfirm import historical_pass_rate  # noqa: E402
+from futbot.propfirm import escalones, historical_pass_rate, historical_pass_rate_sized  # noqa: E402
 from futbot.recipes import RECIPES  # noqa: E402
 from futbot.strategies import make_strategy  # noqa: E402
 
@@ -86,11 +89,39 @@ def main() -> None:
     print(t.groupby(bins, observed=True).agg(trades=("pnl", "size"), acierto=("pnl", lambda x: f"{(x > 0).mean():.0%}"),
                                              R_medio=("R", lambda x: f"{x.mean():+.2f}")).to_string())
     print("\nPor mercado:", t["market"].value_counts().to_dict(), "· salidas:", t["reason"].value_counts().to_dict())
-    print("\nCuentas de 50K (empezando la evaluación cada día del histórico, plazo de 1 año):")
+    print(f"\nCuentas de 50K con riesgo fijo de ${args.riesgo:,.0f} (empezando cada día del histórico, plazo 1 año):")
     for f in FIRMS:
         h = historical_pass_rate(full, f)
         print(f"  {f:<20} aprueba {h['pass_rate']:.0%} · suspende {h['fail_rate']:.0%} · "
               f"no termina en 1 año {h['timeout_rate']:.0%} · mediana {h['median_days_pass']:.0f} sesiones")
+    # riesgo por escalones según el colchón sobre el límite ($300 / $200 / $100), con contratos enteros
+    sized = pd.DataFrame(dict(date=pd.to_datetime(t["entry_time"]).dt.tz_localize(None), R=t["R"],
+                              mae_r=(t["mae"] / (t["entry"] - t["stop"]).abs()).clip(upper=0),
+                              risk_pts=(t["entry"] - t["stop"]).abs(), point_value=pv))
+    print("\nCon riesgo por escalones ($300 con colchón >= $1.400, $200 desde $800, $100 por debajo):")
+    for f in FIRMS:
+        h = historical_pass_rate_sized(sized, f, escalones, days=full.index)
+        print(f"  {f:<20} aprueba {h['pass_rate']:.0%} · suspende {h['fail_rate']:.0%} · "
+              f"no termina en 1 año {h['timeout_rate']:.0%} · mediana {h['median_days_pass']:.0f} sesiones")
+    salud(t["R"].to_numpy())
+
+
+def salud(r, ventana: int = 30, n_sims: int = 20000, seed: int = 0) -> None:
+    """¿Los últimos trades se parecen al histórico? Compara el R medio de los últimos `ventana` trades con
+    el de ventanas iguales sacadas al azar del histórico (si es peor que el 95 % de ellas, alerta)."""
+    import numpy as np
+
+    if len(r) < 2 * ventana:
+        return
+    rng = np.random.default_rng(seed)
+    hist = r[:-ventana]
+    sims = rng.choice(hist, size=(n_sims, ventana), replace=True).mean(axis=1)
+    last = r[-ventana:].mean()
+    pct = (sims <= last).mean()
+    estado = "ALERTA: rinde peor que el 95 % de las ventanas históricas" if pct < 0.05 else \
+        "atención: está en el 20 % más bajo" if pct < 0.20 else "normal"
+    print(f"\nSalud del sistema: últimos {ventana} trades R medio {last:+.2f} (histórico {hist.mean():+.2f}) -> "
+          f"percentil {pct:.0%} · {estado}")
 
 
 if __name__ == "__main__":

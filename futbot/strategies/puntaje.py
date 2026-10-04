@@ -41,7 +41,9 @@ class ORBPuntaje(Strategy):
     Stop: mitad de la vela (redondeada alejándose de la entrada); no se opera si queda a menos de
     `min_risk_pts`. Salidas: parcial de `partial_qty_frac` de los contratos a `partial_r` R con stop a
     la entrada para el resto (si hay 2 o más contratos), target a `target_r` R y salida por tiempo al
-    final de la ventana. Guarda el puntaje de cada día con señal en `self.scores` y en el tag del trade.
+    final de la ventana. Con `skip_fomc` no opera los días de anuncio de la Fed (futbot/calendario.py); está
+    apagado en las recetas porque en NQ 2019-2026 no mejoró la simulación de las cuentas de fondeo.
+    Guarda el puntaje de cada día con señal en `self.scores` y en el tag del trade.
     """
 
     name = "orb_puntaje"
@@ -49,7 +51,7 @@ class ORBPuntaje(Strategy):
     default_params = dict(
         window_start="09:30", window_end="10:35", or_minutes=5, min_gap_atr=0.15, min_score=40,
         min_risk_pts=6.0, min_range_ticks=4, target_r=10.0, partial_r=2.0, partial_qty_frac=0.5,
-        be_after_partial=True, atr_len=14, direction="both", qty=1, risk_usd=None, max_qty=50,
+        be_after_partial=True, atr_len=14, direction="both", qty=1, risk_usd=None, max_qty=50, skip_fomc=False,
     )
 
     def setup(self):
@@ -57,6 +59,12 @@ class ORBPuntaje(Strategy):
         self.t_or = self.t0 + self.p["or_minutes"]
         self.daily = {}
         self.scores = {}
+        if self.p["skip_fomc"]:
+            from ..calendario import fomc_dates
+
+            self.skip = fomc_dates()
+        else:
+            self.skip = frozenset()
 
     def prepare(self, data):
         from ..data import daily_bars
@@ -69,7 +77,7 @@ class ORBPuntaje(Strategy):
         self.hi, self.lo, self.first_open = -math.inf, math.inf, None
         self.done = ctx.n == 0 or ctx.S[0] != self.t0
         self.feat = self.daily.get(ctx.date)
-        if self.feat is None or not self.feat[0] >= self.p["min_gap_atr"]:
+        if self.feat is None or not self.feat[0] >= self.p["min_gap_atr"] or ctx.date in self.skip:
             self.done = True
 
     def on_bar(self, ctx):

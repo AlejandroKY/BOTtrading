@@ -26,7 +26,8 @@ Ej.: `python -m futbot backtest --recipe nq_noise_area --symbol NQ --csv data/oa
 
 ## Estructura
 - `futbot/`: `engine.py` (motor), `strategies/` (estrategias; heredan de `futbot.strategies.base.Strategy`),
-  `recipes.py` (estrategia + mercado), `propfirm.py` (reglas de evaluación), `data.py`, `metrics.py`,
+  `recipes.py` (estrategia + mercado), `propfirm.py` (reglas de evaluación y riesgo por escalones),
+  `calendario.py` (días de la Fed), `data.py`, `metrics.py`,
   `report.py`, `contracts.py`, `cli.py`
 - `tests/`: pytest
 - `docs/`: `INVESTIGACION_ESTRATEGIAS.md`, `RESULTADOS_BACKTEST.md`, `ESTRATEGIA_TRADINGVIEW.md` (el bot de TradingView)

@@ -90,3 +90,34 @@ def test_combine_first_uses_backup_only_without_primary():
     trades, daily = combine_first(nq, es)
     assert list(trades.market) == ["NQ", "ES", "NQ"]
     assert list(daily.pnl) == [100.0, 30.0, -50.0]
+
+
+def test_escalones_and_sized_pass_rate():
+    from futbot.propfirm import escalones, historical_pass_rate_sized
+    assert escalones(2000) == 300 and escalones(1400) == 300 and escalones(1000) == 200 and escalones(500) == 100
+    days = pd.bdate_range("2024-01-01", periods=40)
+    # +1R todos los días con 10 puntos de stop en MNQ ($20 por contrato): $300 -> 15 contratos -> +$300 por día
+    trades = pd.DataFrame(dict(date=days, R=1.0, mae_r=-0.5, risk_pts=10.0, point_value=2.0))
+    h = historical_pass_rate_sized(trades, "lucid_flex_50k", escalones, days=days, horizon=20)
+    assert h["pass_rate"] == 1.0 and h["median_days_pass"] == 10  # $3.000 en 10 días
+    # pérdidas seguidas: el riesgo baja a $200 y a $100 y la cuenta resiste más que con $300 fijo
+    losing = trades.assign(R=-1.0, mae_r=-1.0)
+    fixed = historical_pass_rate_sized(losing, "lucid_flex_50k", lambda c, p: 300.0, days=days, horizon=20)
+    steps = historical_pass_rate_sized(losing, "lucid_flex_50k", escalones, days=days, horizon=20)
+    assert fixed["fail_rate"] == 1.0 and fixed["median_days_fail"] == 7  # $300 x 7 > $2.000
+    assert steps["median_days_fail"] > fixed["median_days_fail"]
+
+
+def test_skip_fomc_days():
+    from futbot.calendario import fomc_dates
+    assert pd.Timestamp("2026-10-28").date() in fomc_dates() and pd.Timestamp("2027-12-08").date() in fomc_dates()
+    frames, _ = _history()
+    day = "2024-01-31"  # anuncio de la Fed
+    first = bars(day, [("09:30", 4025.0, 4026.0, 4024.75, 4025.75), ("09:31", 4025.75, 4027.0, 4025.5, 4026.75),
+                       ("09:32", 4026.75, 4028.0, 4026.5, 4027.75), ("09:33", 4027.75, 4029.0, 4027.5, 4028.75),
+                       ("09:34", 4028.75, 4033.0, 4028.5, 4032.75)])
+    frames = [f for f in frames if f.index[0].date() < pd.Timestamp(day).date()]
+    data = pd.concat(frames + [first, flat_session(day, "09:35", 60, 4033.0, step=0.0, rng=0.25)])
+    kw = dict(slippage_ticks=0, stop_slippage_ticks=0, commission_rt=0.0)
+    assert len(run_backtest(data, MNQ, ORBPuntaje(min_risk_pts=1.0), **kw).trades) == 1
+    assert run_backtest(data, MNQ, ORBPuntaje(min_risk_pts=1.0, skip_fomc=True), **kw).trades.empty
