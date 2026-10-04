@@ -19,6 +19,10 @@ python -m futbot backtest --recipe nq_noise_area --symbol NQ   # verificación v
 Los datos de 1 min se leen de `data/raw/financial-data` (sparse clone de FutureSharks/financial-data, ver README)
 o de un CSV con `--csv ... --tz UTC`.
 
+`data/oanda/` (sí versionado): histórico reciente de OANDA MT5 (M1 desde jun-2026, M5 desde may-2025) de
+US500, US100, US2000, XAUUSD, USOIL y EURUSD, bajado con `scripts/download_mt5.py` (requiere MT5 abierto).
+Ej.: `python -m futbot backtest --recipe nq_noise_area --symbol NQ --csv data/oanda/US100_M1.csv.gz --tz UTC`
+
 ## Estructura
 - `futbot/`: `engine.py` (motor), `strategies/` (estrategias; heredan de `futbot.strategies.base.Strategy`),
   `recipes.py` (estrategia + mercado), `propfirm.py` (reglas de evaluación), `data.py`, `metrics.py`,
