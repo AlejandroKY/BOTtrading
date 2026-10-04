@@ -422,6 +422,32 @@ Para llegar a 3 trades por semana y a acierto alto probé, en NQ real 2019-2026,
 | **E2 siempre, a la mitad del riesgo y solo con colchón ≥ $1.400** | **Adoptado**: aprueba 65 % y suspende 1 % en 2005-2026, contra 60 % y 8 % de E1 sola con los escalones anteriores. Termina antes y opera el doble |
 | Pausar una estrategia después de 20-50 trades malos (curva de capital) | No ayuda: las operaciones después de una mala racha fueron, en promedio, tan buenas como las demás |
 
+**Cuarta ronda (octubre de 2026): ¿se puede llegar a 70 % de acierto sin perder ganancia?** Solo con datos de 2023 en adelante: NQ real 2023-2026 y tus datos de OANDA de NQ y ES 2025-26. Probé setups de "acierto alto" sacados de estadísticas publicadas, salidas más cortas para E1 y un modelo de aprendizaje automático.
+
+| Idea (2023-2026) | Acierto | Ganancia por operación |
+|---|---|---|
+| Rellenar gaps chicos (< 0,3 ATR; se rellenan ~78 % de las veces en el día) | 36-59 % | −0,18R a +0,06R |
+| Volver al VWAP desde ±1,5-2,5 desviaciones | 24-53 % | −0,4R a +0,05R |
+| Retest del rango de la primera hora tras extenderse (71 % "retestea y sigue") | 57-69 % | −0,06R a +0,06R |
+| Vender máximos nuevos poco extendidos (y comprar mínimos) | 32-59 % | −0,23R a −0,01R |
+| E1 tomando 1/3 en +0,75R con stop a la entrada | 56-65 % | +0,11R a +0,46R (−25 % de ganancia total) |
+| E1 tomando la mitad en +0,5R | 62-70 % | +0,07R a +0,28R (−50 % o más) |
+| E1 con puntaje ≥ 60 y 1/3 en +0,5R | 54-71 % | +0,04R a +0,30R (−65 %) |
+| Modelo de aprendizaje automático (entrenado con 2005-2022) para elegir las mejores señales | 45-52 % | No supera al puntaje |
+| **E1 con puntaje ≥ 80** (ya se puede elegir en la configuración) | **58-73 %** | **+0,5R a +1,9R**, pero solo ~7 operaciones por año |
+
+Simulación de LucidFlex 50K con NQ real 2023-2026:
+
+| Sistema | Acierto | Aprueba en 1 año | Tiempo típico |
+|---|---|---|---|
+| **Actual (E1 + E2)** | 40 % | **81 %** | **69 sesiones** |
+| Actual solo E1 | 45 % | 85 % | 102 sesiones |
+| E1 con 1/3 en +0,75R | 60 % | 58 % | 136 sesiones |
+| E1 con puntaje ≥ 60 y 1/3 en +0,5R | 67 % | 30 % | 186 sesiones |
+| E1 con puntaje ≥ 80 | 58 % | 47 % | 144 sesiones |
+
+**Conclusión:** en NQ y ES de 2023-2026 no encontré nada que llegue a 70 % de acierto y siga ganando lo mismo. Los setups de acierto alto aciertan seguido, pero ganan poco cada vez, y las comisiones se lo comen. Tomar ganancias antes sube el acierto, pero corta las operaciones grandes, que son las que hacen la plata. En la cuenta de fondeo, todas las versiones con más acierto aprueban menos y tardan más. Por eso el bot se queda como está. Si prefieres acertar más aunque ganes menos, sube el puntaje mínimo a 60 u 80 en la configuración.
+
 **Lo que sí funcionó:** filtrar con un puntaje armado con condiciones que tienen lógica de mercado. Cada condición mejoró el resultado tanto en los datos usados para elegirla como en los guardados para comprobarla.
 
 **Limitaciones honestas:**
@@ -481,6 +507,7 @@ Ordenado por lo que más ayuda:
 - E1: Zarattini y Aziz (2023), [*Can Day Trading Really Be Profitable?*](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4416622).
 - E2: Zarattini, Aziz y Barbon (2024), [*Beat the Market: An Effective Intraday Momentum Strategy for S&P500 ETF (SPY)*](https://www.semanticscholar.org/paper/Beat-the-Market:-An-Effective-Intraday-Momentum-for-Zarattini-Aziz/e498fd2da1bd1422a2b1612253e4d2fbbaf232bf).
 - Candidata descartada, estadísticas del rango de la primera hora: [tradingstats.net](https://tradingstats.net/initial-balance-breakout-statistics/) y [edgeful](https://www.edgeful.com/blog/posts/top-3-day-trading-strategies-for-beginners).
+- Setups de acierto alto probados en la cuarta ronda: [relleno de gaps de NQ](https://tradingstats.net/gap-fill-strategy/), [retest del rango de la primera hora](https://tradingstats.net/initial-balance-retest-statistics/), [máximo del día que se sostiene](https://tradingstats.net/high-of-the-day-hold/) y [reversión al VWAP](https://crosstrade.io/learn/trading-strategies/vwap-reversion).
 
 **Fuentes de datos:**
 - NQ real: velas de 1 minuto de MNQ de Databento, publicadas en [vinentHuynh/QuantResearch](https://github.com/vinentHuynh/QuantResearch).
