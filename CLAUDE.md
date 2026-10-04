@@ -32,8 +32,8 @@ Ej.: `python -m futbot backtest --recipe nq_noise_area --symbol NQ --csv data/oa
 - `tests/`: pytest
 - `docs/`: `INVESTIGACION_ESTRATEGIAS.md`, `RESULTADOS_BACKTEST.md`, `ESTRATEGIA_TRADINGVIEW.md` (el bot de TradingView)
 - `pine/orb5_puntaje.pine` (indicador) y `pine/orb5_puntaje_estrategia.pine` (strategy): mismas reglas que
-  `futbot/strategies/puntaje.py` (recetas `nq_orb5_puntaje` y `es_orb5_puntaje`). Si cambias una regla, cámbiala
-  en los dos lados. Backtest del bot: `python scripts/backtest_puntaje.py --nq ... --es ... [--tz mt5]`
+  `futbot/strategies/puntaje.py` (E1, recetas `nq_orb5_puntaje` y `es_orb5_puntaje`) y `NoiseGap10` en
+  `futbot/strategies/momentum.py` (E2, receta `nq_ruido10`). Si cambias una regla, cámbiala en los dos lados. Backtest del bot: `python scripts/backtest_puntaje.py --nq ... --es ... [--tz mt5]`
 
 ## No se suben a git
 `data/raw/`, `data/cache/`, `results/` y `.venv/` (ya están en `.gitignore`).

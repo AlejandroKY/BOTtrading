@@ -47,6 +47,10 @@ RECIPES: dict[str, Recipe] = {
         Recipe("es_orb5_puntaje", "orb_puntaje", "MES", "ES · ORB 5 min con puntaje >= 40 (respaldo de NQ)",
                "Mismas reglas que nq_orb5_puntaje; stop mínimo 4 puntos (5 veces el costo en MES)",
                dict(min_risk_pts=4.0, risk_usd=200.0)),
+        Recipe("nq_ruido10", "noise_gap", "MNQ", "NQ · Noise Area a las 10:00 a favor del gap (estrategia 2 del bot)",
+               "Zarattini, Aziz & Barbon (2024), SSRN 4824172, con un solo control a las 10:00, sólo a favor del gap "
+               "y salida a las 11:00; se opera a la mitad del riesgo de la estrategia 1. Ver docs/ESTRATEGIA_TRADINGVIEW.md",
+               dict(min_risk_pts=6.0, risk_usd=150.0)),
         Recipe("nq_orb5_atr", "orb_zarattini", "MNQ", "NQ · ORB 5 min, stop 10% ATR, salida al cierre",
                "Zarattini, Barbon & Aziz (2024), SSRN 4729284",
                dict(IDX, or_minutes=5, stop_atr=0.10, target_r=None)),

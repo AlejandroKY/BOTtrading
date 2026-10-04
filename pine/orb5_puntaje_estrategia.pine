@@ -9,9 +9,13 @@
 // Diferencias con futbot: TradingView decide el orden de stop y take profit dentro de una vela y, en la
 // vela de entrada, el parcial y el take profit usan el precio de cierre de las 9:35 como entrada
 // estimada. Por eso sus números pueden diferir un poco del backtest de futbot.
+// Incluye la estrategia 2 (Noise Area a las 10:00, sólo en el gráfico de NQ/MNQ): entra a las 10:00 a favor
+// del gap si el precio salió de la zona de ruido, stop en max/min(banda, VWAP), salida a las 11:00, con la
+// mitad del riesgo y sólo con colchón de $1.400 o más. Si hay una posición de la estrategia 1 en el mismo
+// sentido, se suma (pyramiding = 2, cada entrada con su propio stop); si es en sentido contrario, no se opera.
 // Herramienta de estudio, no asesoría financiera.
 // =====================================================================================
-strategy("ORB 5m NQ/ES con puntaje · estrategia (futbot)", shorttitle = "ORB5 puntaje (estrategia)", overlay = true, initial_capital = 50000, currency = currency.USD, default_qty_type = strategy.fixed, default_qty_value = 1, commission_type = strategy.commission.cash_per_contract, commission_value = 0.70, slippage = 1, pyramiding = 0, max_labels_count = 500)
+strategy("ORB 5m NQ/ES con puntaje · estrategia (futbot)", shorttitle = "ORB5 puntaje (estrategia)", overlay = true, initial_capital = 50000, currency = currency.USD, default_qty_type = strategy.fixed, default_qty_value = 1, commission_type = strategy.commission.cash_per_contract, commission_value = 0.70, slippage = 1, pyramiding = 2, close_entries_rule = "ANY", max_labels_count = 500)
 
 // ------------------------------------------------------------------- Entradas
 grpE = "Estrategia"
@@ -25,12 +29,16 @@ minGapAtr = input.float(0.15, "Gap mínimo (× ATR diario)", minval = 0.0, step 
 atrLen    = input.int(14, "Días del ATR", minval = 2, group = grpE)
 adjRolls  = input.bool(true, "Ajustar cambios de contrato (recomendado)", group = grpE)
 
+grpE2 = "Estrategia 2: Noise Area a las 10:00 (sólo NQ)"
+useE2  = input.bool(true, "Operar la estrategia 2", group = grpE2, tooltip = "Revisa a las 10:00 si NQ salió de su zona de ruido a favor del gap. Riesgo: la mitad del de la estrategia 1 y sólo con colchón de $1.400 o más.")
+e2Look = input.int(14, "Días para medir el ruido", minval = 5, maxval = 60, group = grpE2)
+
 grpM = "Mercados"
 nqSym = input.symbol("CME_MINI:NQ1!", "Nasdaq", group = grpM)
 esSym = input.symbol("CME_MINI:ES1!", "S&P 500", group = grpM)
 
 grpR = "Riesgo"
-riskMode = input.string("Escalones según colchón (recomendado)", "Riesgo por operación", options = ["Escalones según colchón (recomendado)", "Fijo"], group = grpR, tooltip = "Escalones: $300 si te quedan $1.400 o más sobre el límite de pérdida de la cuenta, $200 entre $800 y $1.400, y $100 por debajo. En la simulación de cuentas de 50K suspende mucho menos que un riesgo fijo.")
+riskMode = input.string("Escalones según colchón (recomendado)", "Riesgo por operación", options = ["Escalones según colchón (recomendado)", "Fijo"], group = grpR, tooltip = "Escalones: $300 si te quedan $1.400 o más sobre el límite de pérdida de la cuenta, $200 entre $800 y $1.400, y $75 por debajo. En la simulación de cuentas de 50K suspende mucho menos que un riesgo fijo. La estrategia 2 arriesga la mitad ($150) y sólo con $1.400 o más.")
 maxLossAcct = input.float(2000.0, "Límite de pérdida de la cuenta (USD)", minval = 100, step = 100, group = grpR, tooltip = "Se usa para calcular el colchón del riesgo por escalones: el límite sigue al mejor saldo y se fija en el saldo inicial + el valor de abajo.")
 lockAcct = input.float(100.0, "El límite se fija en saldo inicial + (USD)", minval = 0, step = 50, group = grpR)
 riskFix  = input.float(200.0, "Riesgo fijo (USD)", minval = 10, step = 10, group = grpR, tooltip = "Sólo si elegiste 'Fijo'. Para una cuenta de 50K: $200.")
@@ -38,8 +46,11 @@ sizeMode = input.string("Micro (MNQ / MES)", "Contratos", options = ["Micro (MNQ
 maxQty   = input.int(50, "Máximo de contratos", minval = 1, group = grpR)
 costNq   = input.float(1.2, "Costo por operación NQ (puntos)", minval = 0, step = 0.1, group = grpR, tooltip = "Comisión + deslizamiento de ida y vuelta. El stop mínimo es 5 veces este costo (NQ: 6 puntos).")
 costEs   = input.float(0.8, "Costo por operación ES (puntos)", minval = 0, step = 0.1, group = grpR, tooltip = "ES: stop mínimo 4 puntos.")
-stepRisk(float c) => c >= 1400 ? 300.0 : c >= 800 ? 200.0 : 100.0
+stepRisk(float c) => c >= 1400 ? 300.0 : c >= 800 ? 200.0 : 75.0
+E2_MULT = 0.5      // la estrategia 2 arriesga la mitad que la 1...
+E2_MINC = 1400.0   // ...y sólo con este colchón o más
 var float riskUsd = riskMode == "Fijo" ? riskFix : stepRisk(maxLossAcct)
+var float e2Risk  = riskMode == "Fijo" ? riskFix * E2_MULT : stepRisk(maxLossAcct) * E2_MULT
 
 // ------------------------------------------------------------------- Constantes y utilidades
 TZ       = "America/New_York"
@@ -48,6 +59,8 @@ OR_END   = OPEN_MIN + 5
 RTH_END  = 16 * 60
 ON_START = 18 * 60
 EXIT_MIN = OR_END + holdMin
+E2_CHK   = 10 * 60
+E2_END   = 11 * 60
 TICK     = 0.25
 micro    = sizeMode == "Micro (MNQ / MES)"
 pvNq     = micro ? 2.0 : 20.0
@@ -160,10 +173,12 @@ pvChart = syminfo.pointvalue
 monday = dayofweek(time, TZ) == dayofweek.monday
 
 var int   orDay = na
+var float orO   = na
 var float orH   = na
 var float orL   = na
 if inRth and tMin == OPEN_MIN
     orDay := dayKey
+    orO   := open
     orH   := high
     orL   := low
 else if inRth and tMin < OR_END and orDay == dayKey
@@ -186,9 +201,23 @@ if strategy.position_size == 0
     lossThr := math.max(lossThr, math.min(eqPeak - maxLossAcct, strategy.initial_capital + lockAcct))
 if riskMode != "Fijo"
     riskUsd := stepRisk(eqNow - lossThr)
+    e2Risk  := eqNow - lossThr >= E2_MINC ? riskUsd * E2_MULT : 0.0
 plot(eqNow - lossThr, "Colchón sobre el límite (USD)", display = display.data_window)
 
 // ------------------------------------------------------------------- Señal (9:35) y entrada
+// posiciones abiertas de cada estrategia (la 1 usa los id "Compra"/"Venta"; la 2, "E2 compra"/"E2 venta")
+e1Px  = float(na)
+e1Qty = 0.0
+e2Qty = 0.0
+if strategy.opentrades > 0
+    for k = 0 to strategy.opentrades - 1
+        tid = strategy.opentrades.entry_id(k)
+        if tid == "Compra" or tid == "Venta"
+            e1Px  := strategy.opentrades.entry_price(k)
+            e1Qty += math.abs(strategy.opentrades.size(k))
+        else
+            e2Qty += math.abs(strategy.opentrades.size(k))
+
 orDone = barstate.isconfirmed and tfOk and inRth and orDay == dayKey and tcMin == OR_END
 if orDone and strategy.position_size == 0
     [nDir, nStop, nRisk, nScore, nQty, nWhy, nDet, nGap] = signal(nDone, nO, nH, nL, nC, nOnH, nOnL, nPH, nPL, nPC, nAtr, pvNq, costNq, monday, riskUsd)
@@ -219,13 +248,13 @@ if orDone and strategy.position_size == 0
             strategy.exit("Resto", id, stop = stop, limit = close + myDir * targetR * rk, comment_profit = "TP", comment_loss = "Stop")
 
 // ------------------------------------------------------------------- Gestión con el precio de entrada real
-if strategy.position_size != 0
+if e1Qty > 0
     id    = dir0 > 0 ? "Compra" : "Venta"
-    entry = strategy.position_avg_price
+    entry = e1Px
     risk  = math.abs(entry - stop0)
     tp1   = math.round((entry + dir0 * partR * risk) / TICK) * TICK
     tp    = math.round((entry + dir0 * targetR * risk) / TICK) * TICK
-    open1 = math.abs(strategy.position_size)
+    open1 = e1Qty
     if not partSet
         if qPart > 0
             strategy.exit("TP1", id, qty = qPart, stop = stop0, limit = tp1, comment_profit = "TP1", comment_loss = "Stop")
@@ -235,4 +264,40 @@ if strategy.position_size != 0
         strategy.exit("Resto", id, stop = entry, limit = tp, comment_profit = "TP", comment_loss = "Stop en la entrada")
         beSet := true
     if barstate.isconfirmed and tcMin >= EXIT_MIN
-        strategy.close_all(comment = "Salida " + fHM(EXIT_MIN), immediately = true)
+        strategy.close(id, comment = "Salida " + fHM(EXIT_MIN), immediately = true)
+
+// ------------------------------------------------------------------- Estrategia 2: Noise Area a las 10:00 (sólo NQ)
+var float[] e2Moves = array.new_float()
+var float e2Pv  = 0.0
+var float e2Vol = 0.0
+var int   e2Dir = 0
+if inRth and tMin == OPEN_MIN
+    e2Pv  := 0.0
+    e2Vol := 0.0
+if inRth and orDay == dayKey and tMin < E2_CHK
+    v = na(volume) or volume <= 0 ? 1.0 : volume
+    e2Pv  += (high + low + close) / 3.0 * v
+    e2Vol += v
+e2Done = barstate.isconfirmed and tfOk and chartMkt == 1 and inRth and orDay == dayKey and tcMin == E2_CHK
+if e2Done
+    mv  = math.abs(close / orO - 1.0)
+    sig = array.size(e2Moves) >= e2Look ? array.avg(e2Moves) : na
+    pcC = nPC - (nO - orO)   // cierre cash de ayer en precios del gráfico (sin saltos por cambio de contrato)
+    gap = orO - pcC
+    ub  = math.max(orO, pcC) * (1 + sig)
+    lb  = math.min(orO, pcC) * (1 - sig)
+    vw  = e2Vol > 0 ? e2Pv / e2Vol : close
+    d2  = na(sig) or na(pcC) ? 0 : gap > 0 and close > ub ? 1 : gap < 0 and close < lb ? -1 : 0
+    st2 = d2 > 0 ? roundDown(math.max(ub, vw)) : roundUp(math.min(lb, vw))
+    rk2 = (close - st2) * d2
+    q2  = rk2 > 0 ? math.min(maxQty, math.floor(e2Risk / (rk2 * pvChart))) : 0
+    array.push(e2Moves, mv)
+    if array.size(e2Moves) > e2Look
+        array.shift(e2Moves)
+    if useE2 and d2 != 0 and rk2 >= 5 * costNq and q2 >= 1 and e2Qty == 0 and not (e1Qty > 0 and dir0 != d2)
+        id2 = d2 > 0 ? "E2 compra" : "E2 venta"
+        e2Dir := d2
+        strategy.entry(id2, d2 > 0 ? strategy.long : strategy.short, qty = q2, comment = id2)
+        strategy.exit("E2 stop", id2, stop = st2, comment_loss = "E2 stop")
+if e2Qty > 0 and barstate.isconfirmed and tcMin >= E2_END
+    strategy.close(e2Dir > 0 ? "E2 compra" : "E2 venta", comment = "E2 salida 11:00", immediately = true)

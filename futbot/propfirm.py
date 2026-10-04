@@ -215,9 +215,10 @@ def with_overrides(rules: PropRules | str, **kw) -> PropRules:
 
 def escalones(cushion: float, profit: float = 0.0) -> float:
     """Riesgo por operación (USD) según el colchón sobre el límite de pérdida de la cuenta:
-    $300 con $1.400 o más, $200 entre $800 y $1.400, y $100 por debajo (pensado para cuentas de 50K
-    con límite de $2.000). Arriesga más cuando hay espacio y menos cerca del límite."""
-    return 300.0 if cushion >= 1400 else 200.0 if cushion >= 800 else 100.0
+    $300 con $1.400 o más, $200 entre $800 y $1.400, y $75 por debajo (pensado para cuentas de 50K
+    con límite de $2.000). Arriesga más cuando hay espacio y menos cerca del límite. El último escalón
+    era $100: con $75 la simulación 2005-2026 suspende 1 % de las cuentas en vez de 8 % y aprueba lo mismo."""
+    return 300.0 if cushion >= 1400 else 200.0 if cushion >= 800 else 75.0
 
 
 def historical_pass_rate_sized(trades: pd.DataFrame, rules: PropRules | str, sizing=escalones,
@@ -226,8 +227,10 @@ def historical_pass_rate_sized(trades: pd.DataFrame, rules: PropRules | str, siz
     """Como historical_pass_rate, pero con el tamaño decidido trade a trade según el estado de la cuenta.
 
     trades: una fila por trade con columnas date, R (resultado neto en múltiplos del riesgo), mae_r (peor
-    excursión en contra, en R, <= 0), risk_pts (distancia al stop en puntos) y point_value.
-    sizing(colchón, beneficio) -> riesgo en USD; se operan floor(riesgo / (risk_pts x point_value))
+    excursión en contra, en R, <= 0), risk_pts (distancia al stop en puntos) y point_value; opcionales:
+    mult (fracción del riesgo de `sizing` para ese trade, p.ej. 0,5 en la estrategia 2) y min_cushion
+    (colchón mínimo para tomarlo). Los trades de un mismo día se procesan en orden.
+    sizing(colchón, beneficio) -> riesgo en USD; se operan floor(riesgo x mult / (risk_pts x point_value))
     contratos (máximo `max_micros` de la firma); si no cabe ninguno, ese trade se salta.
     days: días hábiles del histórico (por defecto, del primer al último trade). El drawdown intradía
     ("intraday") se aproxima como EOD.
@@ -238,10 +241,12 @@ def historical_pass_rate_sized(trades: pd.DataFrame, rules: PropRules | str, siz
     if days is None:
         days = pd.bdate_range(t["date"].min(), t["date"].max())
     pos = pd.Index(days).get_indexer(t["date"])
-    t = t[pos >= 0].assign(_d=pos[pos >= 0]).sort_values(["_d"])
+    t = t[pos >= 0].assign(_d=pos[pos >= 0]).sort_values(["_d"], kind="stable")
+    mult = t["mult"] if "mult" in t else pd.Series(1.0, index=t.index)
+    gate = t["min_cushion"] if "min_cushion" in t else pd.Series(0.0, index=t.index)
     by_day: dict[int, list] = {}
-    for d, r, m, rk, pv in zip(t["_d"], t["R"], t["mae_r"], t["risk_pts"], t["point_value"]):
-        by_day.setdefault(int(d), []).append((float(r), min(float(m), 0.0), float(rk), float(pv)))
+    for d, r, m, rk, pv, mu, g in zip(t["_d"], t["R"], t["mae_r"], t["risk_pts"], t["point_value"], mult, gate):
+        by_day.setdefault(int(d), []).append((float(r), min(float(m), 0.0), float(rk), float(pv), float(mu), float(g)))
     n = len(days)
     a, L = rules.account_size, rules.max_loss
     lock = None if rules.trail_lock is None else a + rules.trail_lock
@@ -255,8 +260,10 @@ def historical_pass_rate_sized(trades: pd.DataFrame, rules: PropRules | str, siz
         res = None
         for k in range(s, min(n, s + limit)):
             day_pnl, did = 0.0, False
-            for r, m, rk, pv in by_day.get(k, ()):
-                q = int(min(rules.max_micros, math.floor(sizing(bal - thr, bal - a) / (rk * pv))))
+            for r, m, rk, pv, mu, g in by_day.get(k, ()):
+                if bal - thr < g:
+                    continue
+                q = int(min(rules.max_micros, math.floor(sizing(bal - thr, bal - a) * mu / (rk * pv))))
                 if q < 1:
                     continue
                 usd_r = q * rk * pv

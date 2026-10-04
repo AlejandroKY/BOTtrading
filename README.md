@@ -8,7 +8,9 @@ para las reglas de las prop firms (Topstep, Apex, Tradeify, MyFundedFutures, Luc
   primero, ES de respaldo) y muestra compra/venta, stop, parcial en +2R con stop a la entrada, contratos para tu
   riesgo, panel y alertas al celular. También hay una versión para el Probador de estrategias:
   [pine/orb5_puntaje_estrategia.pine](pine/orb5_puntaje_estrategia.pine). Validado con datos reales de CME
-  2019-2026 (43 % de acierto, +0,37R por operación, 8 de 8 años positivos).
+  2019-2026 (43 % de acierto, +0,37R por operación, 8 de 8 años positivos). Suma una **segunda estrategia** en NQ
+  (Noise Area a las 10:00 a favor del gap, salida a las 11:00, mitad del riesgo): juntas aprueban 76 % de las
+  cuentas LucidFlex 50K simuladas en NQ 2019-2026, sin suspensos.
   Guía completa (resultados, cuenta de fondeo recomendada, instalación, alertas, ejecución):
   **[docs/ESTRATEGIA_TRADINGVIEW.md](docs/ESTRATEGIA_TRADINGVIEW.md)**.
 - 📄 **[docs/INVESTIGACION_ESTRATEGIAS.md](docs/INVESTIGACION_ESTRATEGIAS.md)**: las 7 estrategias (reglas exactas,
@@ -94,7 +96,7 @@ python -m futbot stats --recipe nq_orb5_puntaje --symbol MNQ --csv "data/real/NQ
 python -m futbot report
 ```
 
-Recetas incluidas (`python -m futbot list`): `nq_orb5_puntaje` y `es_orb5_puntaje` (las del indicador de TradingView), `nq_orb5_rapida` y `nq_orb5_gap` (versiones anteriores), `nq_orb5`, `nq_orb5_atr`, `es_orb5`, `es_noise_area`, `nq_noise_area`,
+Recetas incluidas (`python -m futbot list`): `nq_orb5_puntaje`, `es_orb5_puntaje` y `nq_ruido10` (las del indicador de TradingView), `nq_orb5_rapida` y `nq_orb5_gap` (versiones anteriores), `nq_orb5`, `nq_orb5_atr`, `es_orb5`, `es_noise_area`, `nq_noise_area`,
 `es_last30`, `nq_last30`, `zn_last30`, `gc_last30`, `cl_last30`, `6e_last30`, `cl_orb15`, `gc_london`, `6e_london`,
 `es_orb30`, `nq_orb30`, `es_gap_fill`, `nq_gap_fill`, `gc_day_short`.
 
@@ -114,7 +116,7 @@ futbot/
 ├── report.py         # genera docs/RESULTADOS_BACKTEST.md
 └── cli.py            # python -m futbot ...
 tests/                # tests del motor, estrategias y simulador
-pine/                 # indicador y estrategia de TradingView (mismas reglas que nq_orb5_puntaje / es_orb5_puntaje)
+pine/                 # indicador y estrategia de TradingView (mismas reglas que nq_orb5_puntaje / es_orb5_puntaje / nq_ruido10)
 scripts/              # backtest del bot (backtest_puntaje.py) y descarga de datos (Databento, MetaTrader 5)
 ```
 

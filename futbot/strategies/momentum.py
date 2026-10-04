@@ -116,6 +116,95 @@ class NoiseArea(Strategy):
             self.profiles.append(self.move)
 
 
+class NoiseGap10(Strategy):
+    """Estrategia 2 del bot: la Noise Area de Zarattini, Aziz & Barbon (2024) reducida a un solo control a
+    las 10:00 y sólo a favor del gap de la apertura (mismas reglas que el Pine).
+
+    - sigma: media de |cierre de las 10:00 / apertura de las 9:30 - 1| de las `lookback` sesiones previas
+      (hacen falta al menos 70 % de datos).
+    - Bandas: superior = max(apertura, cierre cash de ayer) x (1 + sigma); inferior = min(...) x (1 - sigma).
+    - A las 10:00: compra si el gap es alcista y el cierre está sobre la banda superior; vende si el gap es
+      bajista y el cierre está bajo la inferior. Entra al open siguiente.
+    - Stop: el nivel del paper en la señal, max(banda superior, VWAP desde las 9:30) en compras (min(banda
+      inferior, VWAP) en ventas), redondeado alejándose de la entrada; no opera si queda a menos de
+      `min_risk_pts`. Sin objetivo: sale al final de la ventana (11:00).
+    En el laboratorio, revisar también a las 10:30 y 11:00, ir contra el gap, objetivos, parciales o trailing
+    rindieron menos (docs/ESTRATEGIA_TRADINGVIEW.md).
+    """
+
+    name = "noise_gap"
+    description = "Noise Area con un control a las 10:00 y a favor del gap (estrategia 2 del bot)"
+    default_params = dict(
+        window_start="09:30", window_end="11:00", check="10:00", lookback=14, min_risk_pts=6.0,
+        direction="both", qty=1, risk_usd=None, max_qty=50,
+    )
+
+    def setup(self):
+        self.t0 = sm(self.p["window_start"])
+        self.t_chk = sm(self.p["check"])
+        self.moves: deque = deque(maxlen=self.p["lookback"])
+        self.prev_close = {}
+        self.sigmas = {}
+
+    def prepare(self, data):
+        from ..data import daily_bars
+
+        d = daily_bars(data, rth_start=self.p["window_start"])
+        self.prev_close = dict(zip(d.index, d["prev_rth_close"]))
+
+    def on_session_start(self, ctx):
+        self.day_open = None
+        self.pv = self.vol = 0.0
+        self.move = np.nan
+        self.skip = ctx.n == 0 or ctx.S[0] != self.t0
+        self.pc = self.prev_close.get(ctx.date, np.nan)
+        lb = self.p["lookback"]
+        w = np.array(self.moves, dtype=float)
+        ok = len(w) == lb and np.isfinite(w).sum() >= 0.7 * lb
+        self.sigma = float(np.nanmean(w)) if ok else None
+
+    def on_bar(self, ctx):
+        if self.skip:
+            return
+        i, p = ctx.i, self.p
+        o, h, l, c = ctx.O[i], ctx.H[i], ctx.L[i], ctx.C[i]
+        if self.day_open is None:
+            self.day_open = o
+        v = ctx.V[i] if ctx.V[i] > 0 else 1.0
+        self.pv += (h + l + c) / 3.0 * v
+        self.vol += v
+        if ctx.S[i] + ctx.bar_minutes != self.t_chk:
+            return
+        self.move = abs(c / self.day_open - 1.0)
+        sig, pc = self.sigma, self.pc
+        if sig is None or not pc == pc:
+            return
+        gap = self.day_open - pc
+        ub = max(self.day_open, pc) * (1 + sig)
+        lb = min(self.day_open, pc) * (1 - sig)
+        vwap = self.pv / self.vol
+        self.sigmas[ctx.date] = sig
+        if gap > 0 and c > ub and p["direction"] in ("both", "long"):
+            side, stop = 1, ctx.contract.round_down(max(ub, vwap))
+        elif gap < 0 and c < lb and p["direction"] in ("both", "short"):
+            side, stop = -1, ctx.contract.round_up(min(lb, vwap))
+        else:
+            return
+        risk = (c - stop) * side
+        if risk <= 0 or risk < p["min_risk_pts"]:
+            return
+        qty = p["qty"]
+        if p["risk_usd"]:
+            qty = min(p["max_qty"], int(p["risk_usd"] // (risk * ctx.contract.point_value)))
+        if qty < 1:
+            return
+        (ctx.buy if side > 0 else ctx.sell)(qty, stop=stop, tag=f"ruido sigma={sig:.5f}")
+
+    def on_session_end(self, ctx):
+        if not self.skip:
+            self.moves.append(self.move)
+
+
 class LastHalfHour(Strategy):
     """Momentum de la última media hora: Gao, Han, Li & Zhou (2018, JFE) y Baltussen, Da,
     Lammers & Martens (2021, JFE, 60+ futuros de acciones, bonos, materias primas y divisas).

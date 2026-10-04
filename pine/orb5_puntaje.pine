@@ -10,10 +10,15 @@
 //   4. Un trade por día: NQ primero; ES sólo si NQ no califica.
 //   5. Salidas: con 2+ contratos, la mitad en +2R y el resto con stop en la entrada; resto a 10R
 //      o a las 10:35. Con 1 contrato, sin parcial.
-//   6. Riesgo por escalones según el colchón sobre el límite de la cuenta: $300 / $200 / $100.
+//   6. Riesgo por escalones según el colchón sobre el límite de la cuenta: $300 / $200 / $75.
+//   7. Estrategia 2 (receta `nq_ruido10`, sólo NQ): a las 10:00, si el gap es alcista y el precio está
+//      sobre la banda de ruido -> COMPRA (bajista y bajo la banda -> VENTA). Banda = max/min(apertura,
+//      cierre de ayer) x (1 ± media de |cierre 10:00 / apertura - 1| de los 14 días previos). Stop:
+//      max(banda, VWAP desde las 9:30) en compras (min en ventas). Salida a las 11:00. Riesgo: la mitad
+//      del de la estrategia 1 y sólo con colchón de $1.400 o más ($150).
 // Herramienta de estudio, no asesoría financiera.
 // =====================================================================================
-indicator("ORB 5m NQ/ES con puntaje (futbot)", shorttitle = "ORB5 puntaje", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
+indicator("ORB 5m NQ/ES con puntaje + Noise Area 10:00 (futbot)", shorttitle = "ORB5 puntaje", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
 
 // ------------------------------------------------------------------- Entradas
 grpE = "Estrategia"
@@ -27,20 +32,27 @@ minGapAtr = input.float(0.15, "Gap mínimo (× ATR diario)", minval = 0.0, step 
 atrLen    = input.int(14, "Días del ATR", minval = 2, group = grpE)
 adjRolls  = input.bool(true, "Ajustar cambios de contrato (recomendado)", group = grpE)
 
+grpE2 = "Estrategia 2: Noise Area a las 10:00 (sólo NQ)"
+useE2  = input.bool(true, "Operar la estrategia 2", group = grpE2, tooltip = "Revisa a las 10:00 si NQ salió de su zona de ruido a favor del gap. Riesgo: la mitad del de la estrategia 1 y sólo con colchón de $1.400 o más. Si el script de salud la marca en ALERTA, apágala.")
+e2Look = input.int(14, "Días para medir el ruido", minval = 5, maxval = 60, group = grpE2)
+
 grpM = "Mercados"
 nqSym = input.symbol("CME_MINI:NQ1!", "Nasdaq", group = grpM)
 esSym = input.symbol("CME_MINI:ES1!", "S&P 500", group = grpM)
 
 grpR = "Riesgo"
-riskMode = input.string("Escalones según colchón (recomendado)", "Riesgo por operación", options = ["Escalones según colchón (recomendado)", "Fijo"], group = grpR, tooltip = "Escalones: $300 si te quedan $1.400 o más sobre el límite de pérdida de la cuenta, $200 entre $800 y $1.400, y $100 por debajo. En la simulación de cuentas de 50K suspende mucho menos que un riesgo fijo.")
+riskMode = input.string("Escalones según colchón (recomendado)", "Riesgo por operación", options = ["Escalones según colchón (recomendado)", "Fijo"], group = grpR, tooltip = "Escalones: $300 si te quedan $1.400 o más sobre el límite de pérdida de la cuenta, $200 entre $800 y $1.400, y $75 por debajo. En la simulación de cuentas de 50K suspende mucho menos que un riesgo fijo. La estrategia 2 arriesga la mitad ($150) y sólo con $1.400 o más.")
 cushionIn = input.float(2000.0, "Colchón actual sobre el límite (USD)", minval = 0, step = 50, group = grpR, tooltip = "Saldo de la cuenta menos el nivel donde la pierdes (en LucidFlex/Topstep aparece como pérdida máxima restante). Al empezar una cuenta de 50K es $2.000. Actualízalo después de cada trade.")
 riskFix  = input.float(200.0, "Riesgo fijo (USD)", minval = 10, step = 10, group = grpR, tooltip = "Sólo si elegiste 'Fijo'. Para una cuenta de 50K: $200.")
 sizeMode = input.string("Micro (MNQ / MES)", "Contratos", options = ["Micro (MNQ / MES)", "Mini (NQ / ES)"], group = grpR)
 maxQty   = input.int(50, "Máximo de contratos", minval = 1, group = grpR)
 costNq   = input.float(1.2, "Costo por operación NQ (puntos)", minval = 0, step = 0.1, group = grpR, tooltip = "Comisión + deslizamiento de ida y vuelta. El stop mínimo es 5 veces este costo (NQ: 6 puntos).")
 costEs   = input.float(0.8, "Costo por operación ES (puntos)", minval = 0, step = 0.1, group = grpR, tooltip = "ES: stop mínimo 4 puntos.")
-stepRisk(float c) => c >= 1400 ? 300.0 : c >= 800 ? 200.0 : 100.0
+stepRisk(float c) => c >= 1400 ? 300.0 : c >= 800 ? 200.0 : 75.0
+E2_MULT = 0.5      // la estrategia 2 arriesga la mitad que la 1...
+E2_MINC = 1400.0   // ...y sólo con este colchón o más
 var float riskUsd = riskMode == "Fijo" ? riskFix : stepRisk(cushionIn)
+var float e2Risk  = riskMode == "Fijo" ? riskFix * E2_MULT : cushionIn >= E2_MINC ? stepRisk(cushionIn) * E2_MULT : 0.0
 
 grpV = "Visual"
 showSkip  = input.bool(true, "Mostrar días sin operación (y por qué)", group = grpV)
@@ -57,6 +69,8 @@ OR_END   = OPEN_MIN + 5
 RTH_END  = 16 * 60
 ON_START = 18 * 60
 EXIT_MIN = OR_END + holdMin
+E2_CHK   = 10 * 60
+E2_END   = 11 * 60
 TICK     = 0.25
 micro    = sizeMode == "Micro (MNQ / MES)"
 pvNq     = micro ? 2.0 : 20.0
@@ -222,6 +236,30 @@ var float sumR = 0.0
 var float sumUsd = 0.0
 var int   streak = 0
 var int   maxStrk = 0
+// estrategia 2
+var float[] e2Moves = array.new_float()
+var float  e2Pv    = 0.0
+var float  e2Vol   = 0.0
+var int    e2Sig   = 0
+var float  e2SigStop = na
+var int    e2SigQty = 0
+var int    pos2    = 0
+var int    pos2Day = na
+var int    pos2Bar = na
+var float  entry2  = na
+var float  stop2   = na
+var float  risk2   = na
+var int    qty2    = 0
+var box    bxRisk2 = na
+var line   lnEntry2 = na
+var string sE2     = "Esperando las 10:00"
+var color  cE2     = GRAY
+var int    nOps2   = 0
+var int    nWin2   = 0
+var float  sumR2   = 0.0
+var float  sumUsd2 = 0.0
+var int    streak2 = 0
+var int    maxStrk2 = 0
 
 if na(sDay) or dayKey != sDay
     sDay    := dayKey
@@ -232,12 +270,18 @@ if na(sDay) or dayKey != sDay
     sEstado := "Sin operación"
     cEstado := GRAY
     cSel    := GRAY
+    sE2     := useE2 ? "Esperando las 10:00" : "Apagada"
+    cE2     := GRAY
 
 buySig  = false
 sellSig = false
 exitNow = false
 stopHit = false
 tp1Hit  = false
+e2Buy   = false
+e2Sell  = false
+e2Stop  = false
+e2Exit  = false
 
 closeTrade(float px, string why) =>
     restPts = (px - entryPx) * pos
@@ -392,22 +436,128 @@ if pos != 0
         sEstado := "En curso " + fR(rNow) + (partDone ? " · parcial ✓, stop en la entrada" : "") + " · cierra " + fHM(EXIT_MIN)
         cEstado := rNow >= 0 ? colBuy : colSell
 
+// ------------------------------------------------------------------- 4) Estrategia 2: Noise Area a las 10:00 (sólo NQ)
+// VWAP desde las 9:30 (precio típico x volumen) hasta la vela que cierra a las 10:00
+if inRth and tMin == OPEN_MIN
+    e2Pv  := 0.0
+    e2Vol := 0.0
+if inRth and orDay == dayKey and tMin < E2_CHK
+    v = na(volume) or volume <= 0 ? 1.0 : volume
+    e2Pv  += (high + low + close) / 3.0 * v
+    e2Vol += v
+e2Done = barstate.isconfirmed and tfOk and chartMkt == 1 and inRth and orDay == dayKey and tcMin == E2_CHK
+if e2Done
+    mv   = math.abs(close / orO - 1.0)
+    sig  = array.size(e2Moves) >= e2Look ? array.avg(e2Moves) : na
+    pcC  = nPC - (nO - orO)   // cierre cash de ayer en precios del gráfico (sin saltos por cambio de contrato)
+    gap  = orO - pcC
+    ub   = math.max(orO, pcC) * (1 + sig)
+    lb   = math.min(orO, pcC) * (1 - sig)
+    vw   = e2Vol > 0 ? e2Pv / e2Vol : close
+    d2   = na(sig) or na(pcC) ? 0 : gap > 0 and close > ub ? 1 : gap < 0 and close < lb ? -1 : 0
+    st2  = d2 > 0 ? roundDown(math.max(ub, vw)) : roundUp(math.min(lb, vw))
+    rk2  = (close - st2) * d2
+    q2   = rk2 > 0 ? math.min(maxQty, math.floor(e2Risk / (rk2 * pvNq))) : 0
+    why2 = not useE2 ? "apagada" : na(sig) ? "faltan días de historia" : na(pcC) ? "sin cierre de ayer" : d2 == 0 ? ((gap > 0 and close < lb) or (gap < 0 and close > ub) ? "rompió contra el gap" : "dentro de la zona de ruido") : rk2 < 5 * costNq ? "stop muy cerca" : e2Risk <= 0 ? "colchón < " + fMoney(E2_MINC) : q2 < 1 ? "riesgo " + fMoney(rk2 * pvNq) + " > " + fMoney(e2Risk) : pos != 0 and pos != d2 ? "E1 abierta en sentido contrario" : ""
+    array.push(e2Moves, mv)
+    if array.size(e2Moves) > e2Look
+        array.shift(e2Moves)
+    if why2 == ""
+        e2Sig     := d2
+        e2SigStop := st2
+        e2SigQty  := q2
+        e2Buy     := d2 > 0
+        e2Sell    := d2 < 0
+        col = d2 > 0 ? colBuy : colSell
+        sE2 := (d2 > 0 ? "▲ COMPRA " : "▼ VENTA ") + str.tostring(q2) + " " + cName + " · stop " + fPx(st2) + " · salir 11:00"
+        cE2 := col
+        label.new(time_close, d2 > 0 ? low : high, d2 > 0 ? "E2 COMPRA" : "E2 VENTA", xloc = xloc.bar_time, color = color.new(col, 25), textcolor = color.white, style = d2 > 0 ? label.style_label_up : label.style_label_down, size = size.normal, tooltip = "Estrategia 2 (10:00): " + (d2 > 0 ? "COMPRA " : "VENTA ") + str.tostring(q2) + " " + cName + " a mercado\nGap " + (gap > 0 ? "alcista" : "bajista") + " y el precio salió de la zona de ruido (" + fPx(d2 > 0 ? ub : lb) + ")\nStop: " + fPx(st2) + " (" + (d2 > 0 ? "máx" : "mín") + " de la banda y el VWAP " + fPx(vw) + ") · riesgo ~" + fUsd(-q2 * rk2 * pvNq) + "\nSin take profit: salir a las 11:00")
+        alert("E2 " + (d2 > 0 ? "COMPRA " : "VENTA ") + "NQ (10:00): " + str.tostring(q2) + " " + cName + " a mercado ~" + fPx(close) + " | STOP " + fPx(st2) + " | sin TP | cerrar a las 11:00 NY", alert.freq_once_per_bar_close)
+    else
+        sE2 := "sin trade: " + why2
+        cE2 := GRAY
+        if showSkip and useE2
+            label.new(time_close, high, "E2: " + why2, xloc = xloc.bar_time, color = color(na), textcolor = GRAY, style = label.style_label_down, size = size.tiny, tooltip = "Estrategia 2 a las 10:00\nBanda de ruido: " + fPx(lb) + " / " + fPx(ub) + "\nVWAP: " + fPx(vw))
+else if e2Sig != 0
+    e = open
+    if (e2SigStop - e) * e2Sig < 0 and dayKey == orDay
+        pos2    := e2Sig
+        pos2Day := dayKey
+        pos2Bar := bar_index
+        entry2  := e
+        stop2   := e2SigStop
+        risk2   := math.abs(e - e2SigStop)
+        qty2    := e2SigQty
+        col      = pos2 > 0 ? colBuy : colSell
+        tEnd     = time + (E2_END - tMin) * 60000
+        bxRisk2 := box.new(time, math.max(e, stop2), tEnd, math.min(e, stop2), xloc = xloc.bar_time, border_color = color.new(colSell, 60), bgcolor = color.new(colSell, 85), text = "E2 STOP " + fPx(stop2) + "   " + fUsd(-risk2 * pvNq * qty2) + " · " + str.tostring(qty2) + " " + cName, text_size = size.small, text_color = color.new(colSell, 0), text_halign = text.align_left, text_valign = pos2 > 0 ? text.align_bottom : text.align_top)
+        lnEntry2 := line.new(time, e, tEnd, e, xloc = xloc.bar_time, color = color.new(col, 0), width = 2, style = line.style_dashed)
+        label.new(tEnd, e, "E2 entrada " + fPx(e) + " · salir 11:00", xloc = xloc.bar_time, color = color(na), textcolor = col, style = label.style_label_left, size = size.small)
+    else
+        sE2 := "Cancelada: abrió más allá del stop"
+    e2Sig := 0
+
+if pos2 != 0
+    same = bar_index == pos2Bar
+    hit  = pos2 > 0 ? low <= stop2 : high >= stop2
+    px   = float(na)
+    why  = ""
+    if dayKey != pos2Day
+        px  := open
+        why := "Cierre de emergencia (otro día)"
+    else if hit
+        px  := same ? stop2 : pos2 > 0 ? math.min(open, stop2) : math.max(open, stop2)
+        why := "Stop"
+        e2Stop := true
+    else if barstate.isconfirmed and tcMin >= E2_END
+        px  := close
+        why := "Salida por tiempo 11:00"
+        e2Exit := true
+    if not na(px)
+        netPts = (px - entry2) * pos2 - costNq
+        r      = netPts / risk2
+        usd    = netPts * pvNq * qty2
+        col    = r > 0 ? colBuy : r < 0 ? colSell : GRAY
+        label.new(time, px, "E2 " + fR(r) + "  " + fUsd(usd), xloc = xloc.bar_time, color = color.new(col, 25), textcolor = color.white, style = label.style_label_left, size = size.small, tooltip = "Estrategia 2: " + why + " a " + fPx(px) + "\nEntrada " + fPx(entry2) + " · stop " + fPx(stop2) + "\nResultado neto de costos: " + fR(r) + " = " + fUsd(usd) + " con " + str.tostring(qty2) + " " + cName)
+        box.set_right(bxRisk2, time_close)
+        line.set_x2(lnEntry2, time_close)
+        nOps2   += 1
+        nWin2   += r > 0 ? 1 : 0
+        sumR2   += r
+        sumUsd2 += usd
+        streak2 := r > 0 ? 0 : streak2 + 1
+        maxStrk2 := math.max(maxStrk2, streak2)
+        sE2 := "Cerrada " + fR(r) + " (" + why + ")"
+        cE2 := col
+        side = pos2 > 0 ? "compra" : "venta"
+        if e2Stop
+            alert("E2 STOP NQ: " + side + " cerrada en ~" + fPx(px) + " (" + fR(r) + ")", alert.freq_once_per_bar)
+        else if e2Exit
+            alert("E2 SALIDA 11:00 NQ: cierra la " + side + " a mercado ahora (~" + fPx(px) + ", " + fR(r) + ")", alert.freq_once_per_bar_close)
+        pos2 := 0
+    else
+        rNow = ((close - entry2) * pos2) / risk2
+        sE2 := "En curso " + fR(rNow) + " · stop " + fPx(stop2) + " · cierra 11:00"
+        cE2 := rNow >= 0 ? colBuy : colSell
+
 alertcondition(buySig, "Señal de COMPRA", "ORB5 puntaje: COMPRA a mercado (ver stop y salida en el gráfico)")
 alertcondition(sellSig, "Señal de VENTA", "ORB5 puntaje: VENTA a mercado (ver stop y salida en el gráfico)")
 alertcondition(tp1Hit, "TP1: parcial", "ORB5 puntaje: TP1 tocado, cierra la mitad y mueve el stop a la entrada")
 alertcondition(exitNow, "Salida por tiempo", "ORB5 puntaje: cerrar la posición (salida por tiempo)")
 alertcondition(stopHit, "Stop tocado", "ORB5 puntaje: el precio tocó el stop")
+alertcondition(e2Buy or e2Sell, "E2: señal de las 10:00", "ORB5 puntaje: estrategia 2 (Noise Area 10:00), ver dirección, stop y salida en el gráfico")
+alertcondition(e2Stop or e2Exit, "E2: salida", "ORB5 puntaje: estrategia 2 cerrada (stop o salida de las 11:00)")
 
 // ------------------------------------------------------------------- Panel
 tblPos = panelPos == "Arriba izquierda" ? position.top_left : panelPos == "Abajo derecha" ? position.bottom_right : panelPos == "Abajo izquierda" ? position.bottom_left : position.top_right
-var table tbl = table.new(tblPos, 2, 9, bgcolor = color.new(#131722, 10), frame_color = color.new(GRAY, 60), frame_width = 1, border_color = color.new(GRAY, 85), border_width = 1)
+var table tbl = table.new(tblPos, 2, 12, bgcolor = color.new(#131722, 10), frame_color = color.new(GRAY, 60), frame_width = 1, border_color = color.new(GRAY, 85), border_width = 1)
 
 cell(int row, string k, string v, color c) =>
     table.cell(tbl, 0, row, k, text_color = GRAY, text_size = size.small, text_halign = text.align_left)
     table.cell(tbl, 1, row, v, text_color = c, text_size = size.small, text_halign = text.align_left)
 
 if showPanel and barstate.isfirst
-    table.cell(tbl, 0, 0, "ORB 5m NQ/ES con puntaje ≥ " + str.tostring(minScore) + " · riesgo " + fMoney(riskUsd) + (riskMode == "Fijo" ? "" : " (colchón " + fMoney(cushionIn) + ")"), text_color = color.white, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 0, 0, "ORB 5m NQ/ES con puntaje ≥ " + str.tostring(minScore) + " · riesgo " + fMoney(riskUsd) + (useE2 ? " · E2 " + (e2Risk > 0 ? fMoney(e2Risk) : "sin riesgo") : "") + (riskMode == "Fijo" ? "" : " (colchón " + fMoney(cushionIn) + ")"), text_color = color.white, text_size = size.small, text_halign = text.align_left)
     table.merge_cells(tbl, 0, 0, 1, 0)
 if showPanel and barstate.islast
     if not tfOk or chartMkt == 0
@@ -422,3 +572,7 @@ if showPanel and barstate.islast
     cell(6, "En este gráfico", statTxt, nOps == 0 ? GRAY : sumR >= 0 ? colBuy : colSell)
     cell(7, "Backtest NQ 19-26", "43% acierto · +0.37R por trade · ~1 por semana · 8 de 8 años +", GRAY)
     cell(8, "Por puntaje", "40-59: 36% · 60-79: 45% · 80+: 60% de acierto", GRAY)
+    cell(9, "E2 10:00 (NQ)", chartMkt == 1 ? sE2 : "sólo en el gráfico de NQ/MNQ", chartMkt == 1 ? cE2 : GRAY)
+    statTxt2 = nOps2 == 0 ? "sin operaciones de E2 en el historial cargado" : str.tostring(nOps2) + " trades · " + str.tostring(100.0 * nWin2 / nOps2, "0") + "% acierto · " + fR(sumR2 / nOps2) + " prom · " + fUsd(sumUsd2) + " · peor racha " + str.tostring(maxStrk2)
+    cell(10, "E2 en este gráfico", statTxt2, nOps2 == 0 ? GRAY : sumR2 >= 0 ? colBuy : colSell)
+    cell(11, "Backtest E2", "NQ 2005-25: 40% acierto · +0.39R · ~0.9 por semana · 2026: −0.2R (en alerta)", GRAY)
